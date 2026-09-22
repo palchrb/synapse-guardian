@@ -10,9 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0-or-later" }
 authors = [{ name = "palchrb" }]
-dependencies = [
-    "matrix-common>=1.3.0,<2.0.0",  # match Synapse's own bound so pip can never upgrade it out from under Synapse
-]
+# No runtime dependencies: everything the module needs at run time is either
+# the standard library or Synapse itself. Installing into Synapse's virtualenv
+# therefore resolves nothing and cannot move a package Synapse depends on.
+dependencies = []
 
 [project.optional-dependencies]
 synapse = ["matrix-synapse>=1.133"]
