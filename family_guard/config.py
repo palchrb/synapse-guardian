@@ -59,8 +59,8 @@ class FamilyGuardConfig:
     notify_user: str | None = None
     notify_dedupe_s: float = 300.0
     trusted_senders: frozenset[str] = field(default_factory=frozenset)
-    refresh_interval_s: float = 30.0
-    watch_control_room: bool = True
+    refresh_interval_s: float = 15.0
+    watch_control_room: bool = False
     strict_local_events: bool = False
     dry_run: bool = False
 
@@ -129,8 +129,8 @@ class FamilyGuardConfig:
             notify_user=notify_user,
             notify_dedupe_s=_number(cfg, "notify_dedupe_s", 300),
             trusted_senders=frozenset(s.lower() for s in trusted),
-            refresh_interval_s=_number(cfg, "refresh_interval_s", 30),
-            watch_control_room=_bool(cfg, "watch_control_room", True),
+            refresh_interval_s=_number(cfg, "refresh_interval_s", 15),
+            watch_control_room=_bool(cfg, "watch_control_room", False),
             strict_local_events=_bool(cfg, "strict_local_events", False),
             dry_run=_bool(cfg, "dry_run", False),
         )

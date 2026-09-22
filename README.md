@@ -70,8 +70,8 @@ modules:
       notify_user: "@family-guard-bot:example.org"  # required with notify_room
       notify_dedupe_s: 300
       trusted_senders: []                    # extra local users whose room entries count
-      refresh_interval_s: 30                 # max seconds before a rule change is picked up
-      watch_control_room: true               # see "Workers" before turning this off
+      refresh_interval_s: 15                 # max seconds before a rule change is picked up
+      watch_control_room: false            # true = instant rule updates, but costs a state load per event
       strict_local_events: false             # costs a DB state load per event; see below
       dry_run: false                         # log/notify only, never block
 ```
@@ -89,12 +89,16 @@ modules:
 - `dry_run` still logs and notifies (prefixed `[dry-run]`) so you can calibrate
   before enforcing. Remember to run `scripts/reject_pending_invites.py`
   afterwards (see gaps).
-- `watch_control_room` (default `true`): watch the control room for changes so
-  rule edits apply immediately. It registers Synapse's `on_new_event` callback,
-  which makes Synapse load every persisted event **and that room's full current
-  state** on every process that dispatches it — a server-wide cost paid for one
-  room. Set it to `false` on a busy server to rely on `refresh_interval_s`
-  instead. It is never registered when `control_room` is unset.
+- `watch_control_room` (**default `false`** — leave it): makes rule edits apply
+  instantly instead of within `refresh_interval_s`. It registers Synapse's
+  `on_new_event`, and merely registering that makes Synapse load every persisted
+  event **and that room's full current state** on every process that dispatches
+  it (`third_party_event_rules_callbacks.py:419-425`) — a server-wide cost, paid
+  on every worker, to watch one small room. With it off the module's only
+  recurring work is one `get_room_state` of the control room per
+  `refresh_interval_s` per worker, which is negligible. Turn it on only on a
+  quiet server where a 15-second delay on `!fg` commands would actually bother
+  you. It is never registered when `control_room` is unset.
 - `strict_local_events` (default `false`): the only thing left that this adds
   is stopping a protected user **knocking** on a local room. Opening up a room
   is already blocked for free: `user_may_create_room` refuses a public room at
@@ -138,8 +142,8 @@ the module in a worker deployment.**
   persister (`notifier.py:413` via `handlers/message.py:2211`) *and* by every
   worker that receives the events replication stream
   (`replication/tcp/client.py:222`), so with `watch_control_room: true` a `!fg`
-  command takes effect on all workers within replication latency. With it off,
-  worst case is `refresh_interval_s` (default 30 s).
+  command takes effect on all workers within replication latency. With it off
+  (the default), worst case is `refresh_interval_s` (default 15 s) per worker.
 - **`notify_room` works on any worker.** `create_and_send_event_into_room` goes
   through `create_and_send_nonmember_event`, which forwards to the room's event
   writer over replication when the local instance is not it

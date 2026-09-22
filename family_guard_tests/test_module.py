@@ -429,6 +429,19 @@ class DenyJoinPolicyTestCase(FamilyGuardTestCase):
 
 
 class ControlRoomTestCase(FamilyGuardTestCase):
+    """Rules managed from the control room, with immediate invalidation on.
+
+    `watch_control_room` is off by default because registering `on_new_event`
+    makes Synapse load the room's full current state for every persisted event
+    (third_party_event_rules_callbacks.py:419-425). These tests opt in; the
+    default path is covered by `test_rules_still_propagate_via_ttl`.
+    """
+
+    def module_config(self) -> JsonDict:
+        cfg = super().module_config()
+        cfg["watch_control_room"] = True
+        return cfg
+
     def test_rule_added_via_state_applies_immediately(self) -> None:
         self.assert_federated_invite_blocked("@a:new.org", room_id="!a:new.org")
         self.add_rule("allowed_server", "new.org")
@@ -610,7 +623,9 @@ class StrictLocalEventsTestCase(FamilyGuardTestCase):
 
 
 class WatchControlRoomTestCase(FamilyGuardTestCase):
-    """`on_new_event` is costly server-wide, so it is only registered when usable."""
+    """`on_new_event` is costly server-wide, so it is opt-in."""
+
+    CONFIG_OVERRIDES = {"watch_control_room": True}
 
     def test_on_new_event_registered_when_watching(self) -> None:
         callbacks = self.hs.get_module_api_callbacks().third_party_event_rules
@@ -619,7 +634,7 @@ class WatchControlRoomTestCase(FamilyGuardTestCase):
 
 
 class NoWatchControlRoomTestCase(FamilyGuardTestCase):
-    CONFIG_OVERRIDES = {"watch_control_room": False}
+    """The default: no third-party-rules callback at all."""
 
     def test_on_new_event_not_registered(self) -> None:
         callbacks = self.hs.get_module_api_callbacks().third_party_event_rules
