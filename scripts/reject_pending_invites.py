@@ -35,7 +35,10 @@ SYNC_FILTER = json.dumps(
 )
 
 
-def request(method: str, url: str, token: str, body: dict | None = None) -> dict:
+def request(
+    method: str, url: str, token: str, body: dict | None = None, fatal: bool = True
+) -> dict:
+    """Call the API. With `fatal=False`, an HTTP error is returned, not raised."""
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", f"Bearer {token}")
@@ -44,7 +47,19 @@ def request(method: str, url: str, token: str, body: dict | None = None) -> dict
         with urllib.request.urlopen(req, timeout=60) as resp:
             return json.load(resp)
     except urllib.error.HTTPError as e:
-        raise SystemExit(f"{method} {url} failed: {e.code} {e.read().decode(errors='replace')}")
+        detail = e.read().decode(errors="replace")
+        if fatal:
+            raise SystemExit(f"{method} {url} failed: {e.code} {detail}")
+        return {"_error": f"{e.code} {detail}"}
+
+
+def pending_invites(hs: str, token: str) -> dict:
+    sync = request(
+        "GET",
+        f"{hs}/_matrix/client/v3/sync?timeout=0&filter={urllib.parse.quote(SYNC_FILTER)}",
+        token,
+    )
+    return sync.get("rooms", {}).get("invite", {})
 
 
 def users_from_config(path: str) -> list[str]:
@@ -84,16 +99,12 @@ def main() -> int:
         ap.error("no users given (use --users or --config)")
 
     hs = args.homeserver.rstrip("/")
+    failures = 0
     for user_id in users:
         quoted = urllib.parse.quote(user_id)
         login = request("POST", f"{hs}/_synapse/admin/v1/users/{quoted}/login", admin_token, {})
         token = login["access_token"]
-        sync = request(
-            "GET",
-            f"{hs}/_matrix/client/v3/sync?timeout=0&filter={urllib.parse.quote(SYNC_FILTER)}",
-            token,
-        )
-        invites = sync.get("rooms", {}).get("invite", {})
+        invites = pending_invites(hs, token)
         if not invites:
             print(f"{user_id}: no pending invites")
         for room_id, data in invites.items():
@@ -108,10 +119,36 @@ def main() -> int:
             if args.dry_run:
                 print(f"{user_id}: would reject invite to {room_id} from {inviter}")
                 continue
-            request("POST", f"{hs}/_matrix/client/v3/rooms/{urllib.parse.quote(room_id)}/leave", token, {})
-            print(f"{user_id}: rejected invite to {room_id} from {inviter}")
+            result = request(
+                "POST",
+                f"{hs}/_matrix/client/v3/rooms/{urllib.parse.quote(room_id)}/leave",
+                token,
+                {},
+                fatal=False,
+            )
+            error = result.get("_error")
+            if error is None:
+                print(f"{user_id}: rejected invite to {room_id} from {inviter}")
+                continue
+            # Rejecting a remote invite can fail at the federation step while the
+            # local membership has already moved to "leave" -- Synapse answers
+            # 500 but the invite is gone. Trust the state, not the status code.
+            if room_id in pending_invites(hs, token):
+                failures += 1
+                print(
+                    f"{user_id}: FAILED to reject invite to {room_id} from "
+                    f"{inviter}: {error}"
+                )
+            else:
+                print(
+                    f"{user_id}: rejected invite to {room_id} from {inviter} "
+                    f"(server reported an error, but the invite is gone: {error})"
+                )
         # revoke the temporary token
-        request("POST", f"{hs}/_matrix/client/v3/logout", token, {})
+        request("POST", f"{hs}/_matrix/client/v3/logout", token, {}, fatal=False)
+    if failures:
+        print(f"{failures} invite(s) could not be rejected", file=sys.stderr)
+        return 1
     return 0
 
 
