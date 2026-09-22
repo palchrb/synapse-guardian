@@ -412,6 +412,120 @@ class JoinsTestCase(GuardianTestCase):
         self.assertEqual(channel.code, 200, channel.json_body)
 
 
+class StaleInviteTestCase(GuardianTestCase):
+    """`is_invited` alone is not evidence anyone approved the invite.
+
+    An invite that arrived before the module was installed, or while `dry_run`
+    was on, was never vetted. Re-check the inviter when the join is attempted.
+    """
+
+    def invite_then_block_sender(self, inviter: str, inviter_tok: str) -> str:
+        """Local room where `inviter` invited the kid, then became disallowed."""
+        room_id = self.helper.create_room_as(inviter, is_public=False, tok=inviter_tok)
+        self.helper.invite(room_id, inviter, self.kid, tok=inviter_tok)
+        self.add_rule("blocked_user", inviter)
+        self.force_refresh()
+        return room_id
+
+    def membership(self, room_id: str, user_id: str) -> str | None:
+        row = self.get_success(
+            self.store.get_local_current_membership_for_user_in_room(user_id, room_id)
+        )
+        return row[0] if row else None
+
+    def test_invited_join_from_allowed_inviter_still_ok(self) -> None:
+        room_id = self.helper.create_room_as(self.sibling, is_public=False, tok=self.sibling_tok)
+        self.helper.invite(room_id, self.sibling, self.kid, tok=self.sibling_tok)
+        self.helper.join(room_id, self.kid, tok=self.kid_tok)
+
+    def test_invited_join_from_blocked_inviter_403(self) -> None:
+        room_id = self.invite_then_block_sender(self.sibling, self.sibling_tok)
+        self.helper.join(room_id, self.kid, tok=self.kid_tok, expect_code=403)
+
+    def test_blocked_inviter_stale_invite_is_rejected(self) -> None:
+        room_id = self.invite_then_block_sender(self.sibling, self.sibling_tok)
+        self.assertEqual(self.membership(room_id, self.kid), "invite")
+        self.helper.join(room_id, self.kid, tok=self.kid_tok, expect_code=403)
+        self.pump()
+        self.assertEqual(self.membership(room_id, self.kid), "leave")
+
+    def test_block_names_the_inviter(self) -> None:
+        room_id = self.invite_then_block_sender(self.sibling, self.sibling_tok)
+        with self.assertLogs("synapse_guardian.module", level="INFO") as logs:
+            self.helper.join(room_id, self.kid, tok=self.kid_tok, expect_code=403)
+        self.assertTrue(
+            any(f"inviter {self.sibling} not allowed" in line for line in logs.output),
+            logs.output,
+        )
+
+    def test_unprotected_user_with_blocked_inviter_unaffected(self) -> None:
+        room_id = self.helper.create_room_as(self.parent, is_public=False, tok=self.parent_tok)
+        self.helper.invite(room_id, self.parent, self.sibling, tok=self.parent_tok)
+        self.add_rule("blocked_user", self.parent)
+        self.force_refresh()
+        self.helper.join(room_id, self.sibling, tok=self.sibling_tok)
+
+    def test_inviter_lookup_reads_a_real_pending_invite(self) -> None:
+        room_id = self.helper.create_room_as(self.sibling, is_public=False, tok=self.sibling_tok)
+        self.helper.invite(room_id, self.sibling, self.kid, tok=self.sibling_tok)
+        self.assertEqual(
+            self.get_success(self.module._inviter(self.kid, room_id)), self.sibling
+        )
+
+    def test_inviter_lookup_reads_an_out_of_band_remote_invite(self) -> None:
+        """The case the public API cannot serve: a room we are not in."""
+        room_id = "!remote:friends.org"
+        self.get_success(self.federated_invite("@friend:friends.org", room_id=room_id))
+        self.assertEqual(
+            self.get_success(self.module._inviter(KID, room_id)), "@friend:friends.org"
+        )
+
+    def test_lookup_failure_falls_open_and_warns_once(self) -> None:
+        """A Synapse upgrade must not start refusing every invited join."""
+
+        async def boom(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("store moved")
+
+        # Patch only our view of the store, not Synapse's own `_get_inviter`.
+        self.module._api = Mock(wraps=self.module._api)
+        self.module._api._store = Mock(get_invite_for_local_user_in_room=boom)
+
+        with self.assertLogs("synapse_guardian.module", level="WARNING") as logs:
+            self.assertIsNone(self.get_success(self.module._inviter(KID, "!r:test")))
+            self.assertIsNone(self.get_success(self.module._inviter(KID, "!other:test")))
+        warnings = [line for line in logs.output if "cannot look up who sent" in line]
+        self.assertEqual(len(warnings), 1, logs.output)
+
+        rules = self.get_success(self.module._store.get_rules())
+        verdict = self.get_success(self.module._invited_join_verdict(rules, KID, "!r:test"))
+        self.assertEqual(verdict, NOT_SPAM)
+
+    def test_missing_store_attribute_falls_open(self) -> None:
+        self.module._api = Mock(spec=[])  # no `_store` at all
+        with self.assertLogs("synapse_guardian.module", level="WARNING"):
+            self.assertIsNone(self.get_success(self.module._inviter(KID, "!r:test")))
+
+
+class DryRunStaleInviteTestCase(GuardianTestCase):
+    CONFIG_OVERRIDES = {"dry_run": True}
+
+    def test_dry_run_allows_the_join_and_keeps_the_invite(self) -> None:
+        room_id = self.helper.create_room_as(self.sibling, is_public=False, tok=self.sibling_tok)
+        self.helper.invite(room_id, self.sibling, self.kid, tok=self.sibling_tok)
+        self.add_rule("blocked_user", self.sibling)
+        self.force_refresh()
+        with self.assertLogs("synapse_guardian.module", level="INFO") as logs:
+            self.helper.join(room_id, self.kid, tok=self.kid_tok)
+        self.assertTrue(
+            any("[dry-run] would block join" in line for line in logs.output), logs.output
+        )
+        self.pump()
+        row = self.get_success(
+            self.store.get_local_current_membership_for_user_in_room(self.kid, room_id)
+        )
+        self.assertEqual(row[0], "join")  # joined, invite consumed normally
+
+
 class KnocksTestCase(GuardianTestCase):
     CONFIG_OVERRIDES = {"strict_local_events": True}
 

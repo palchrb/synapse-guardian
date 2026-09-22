@@ -232,3 +232,36 @@ def test_module_sent_events_are_still_created_without_ratelimiting() -> None:
         "create_and_send_event_into_room now rate limits; a burst of blocks "
         f"could start dropping notices. See {WORKERS_DOC}."
     )
+
+
+def test_inviter_lookup_is_still_available_on_the_datastore() -> None:
+    """Guardian re-checks who sent a pending invite before allowing a join.
+
+    `module_api.get_room_state` returns `{}` for a room this server is not in,
+    which is exactly the case that matters, so the public API cannot answer it.
+    We reach into `api._store.get_invite_for_local_user_in_room`, contained in
+    `Guardian._inviter`. Failure there is handled (invited joins fall open), so
+    this test is the early warning, not a safety net.
+    """
+    from synapse.storage.databases.main.roommember import RoomMemberWorkerStore
+
+    lookup = getattr(RoomMemberWorkerStore, "get_invite_for_local_user_in_room", None)
+    assert lookup is not None, (
+        "Synapse dropped store.get_invite_for_local_user_in_room. Guardian._inviter "
+        "can no longer tell who sent a pending invite, so stale invites from a "
+        "now-blocked sender stop being re-checked (it falls open, it does not break). "
+        f"Find the replacement and update Guardian._inviter and {DOC}."
+    )
+    params = inspect.signature(lookup).parameters
+    for name in ("user_id", "room_id"):
+        assert name in params, (
+            f"store.get_invite_for_local_user_in_room no longer takes {name!r}; "
+            "Guardian._inviter calls it by keyword. See Guardian._inviter."
+        )
+
+    from synapse.storage.roommember import RoomsForUser
+
+    assert "sender" in getattr(RoomsForUser, "__annotations__", {}), (
+        "RoomsForUser no longer exposes `.sender`; Guardian._inviter reads the "
+        "inviter from it. See Guardian._inviter."
+    )

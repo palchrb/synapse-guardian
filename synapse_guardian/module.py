@@ -42,6 +42,7 @@ class Guardian:
     def __init__(self, config: GuardianConfig, api: ModuleApi) -> None:
         self._api = api
         self._config = config
+        self._warned_no_inviter_lookup = False
         self._notifier: RoomNotifier | None = None
         if config.notify_room:
             assert config.control_room is not None and config.notify_user is not None
@@ -276,7 +277,7 @@ class Guardian:
             if not rules.is_protected(user_id):
                 return NOT_SPAM
             if is_invited:
-                return NOT_SPAM  # the invite itself was vetted
+                return await self._invited_join_verdict(rules, user_id, room_id)
             if self._config.uninvited_joins == "deny":
                 return self._block(JOIN, user_id, room_id, room_id, "uninvited-joins-denied")
             reason = await self._known_room_reason(rules, user_id, room_id)
@@ -286,6 +287,107 @@ class Guardian:
         except Exception:
             logger.exception("guardian: user_may_join_room failed")
             return await self._fail_closed_if_protected(user_id)
+
+    async def _invited_join_verdict(
+        self, rules: RuleSet, user_id: str, room_id: str
+    ) -> Any:
+        """Accept an invited join only if the inviter is still allowed.
+
+        Invites that arrived before the module was installed -- or while
+        `dry_run` was on -- were never vetted, so `is_invited` alone is not
+        evidence that anyone approved this. Re-check at the moment it matters.
+        """
+        inviter = await self._inviter(user_id, room_id)
+        if inviter is None:
+            return NOT_SPAM  # lookup unavailable: behave as before (see `_inviter`)
+        decision = rules.evaluate(inviter)
+        if decision.allowed:
+            return NOT_SPAM
+        verdict = self._block(
+            JOIN, user_id, room_id, room_id, f"inviter {inviter} not allowed ({decision.reason})"
+        )
+        if verdict != NOT_SPAM:
+            # Not just refuse the join: clear the stale invite so it stops
+            # sitting in the user's client as an unopenable room.
+            self._reject_invite_in_background(user_id, room_id, inviter)
+        return verdict
+
+    async def _inviter(self, user_id: str, room_id: str) -> str | None:
+        """Who invited `user_id` to `room_id`, or None if we cannot tell.
+
+        `module_api.get_room_state` returns `{}` for a room this server is not
+        in, which is exactly the case that matters (an out-of-band invite to a
+        remote room), so the public API cannot answer this. The datastore can,
+        via `get_invite_for_local_user_in_room`, but that is private API.
+
+        Contained here, guarded with `getattr`, and pinned by
+        `guardian_tests/test_synapse_contract.py`. Failure is **open**: every
+        invite that arrives while we are enforcing has already been vetted on
+        the way in, so this re-check only covers the window before the module
+        was installed. Refusing every invited join after a Synapse upgrade
+        would be far worse than the gap it closes.
+        """
+        try:
+            store = getattr(self._api, "_store", None)
+            lookup = getattr(store, "get_invite_for_local_user_in_room", None)
+            if lookup is None:
+                self._warn_no_inviter_lookup()
+                return None
+            invite = await lookup(user_id=user_id, room_id=room_id)
+            sender = getattr(invite, "sender", None)
+            return sender if isinstance(sender, str) else None
+        except Exception:
+            self._warn_no_inviter_lookup(exc_info=True)
+            return None
+
+    def _warn_no_inviter_lookup(self, exc_info: bool = False) -> None:
+        """Once per process: we cannot re-check inviters, so invited joins pass."""
+        if self._warned_no_inviter_lookup:
+            return
+        self._warned_no_inviter_lookup = True
+        logger.warning(
+            "guardian: cannot look up who sent a pending invite "
+            "(store.get_invite_for_local_user_in_room unavailable); invited joins "
+            "by protected users will be allowed without re-checking the inviter",
+            exc_info=exc_info,
+        )
+
+    def _reject_invite_in_background(self, user_id: str, room_id: str, inviter: str) -> None:
+        """Leave the room to clear a stale invite. Never blocks the callback.
+
+        Synapse's `remote_reject_invite` (handlers/room_member.py:2038-2073)
+        tries the federated rejection first and falls back to
+        `_generate_local_out_of_band_leave`, catching "everything from DNS
+        failures upwards" -- so the local membership is cleaned up even when the
+        inviting server is unreachable.
+        """
+        self._api.run_as_background_process(
+            "guardian_reject_invite",
+            self._reject_invite,
+            user_id,
+            room_id,
+            inviter,
+        )
+
+    async def _reject_invite(self, user_id: str, room_id: str, inviter: str) -> None:
+        try:
+            await self._api.update_room_membership(
+                sender=user_id, target=user_id, room_id=room_id, new_membership="leave"
+            )
+            logger.info(
+                "guardian: rejected stale invite for %s in %s from %s",
+                user_id,
+                room_id,
+                inviter,
+            )
+        except Exception:
+            logger.warning(
+                "guardian: could not reject stale invite for %s in %s from %s",
+                user_id,
+                room_id,
+                inviter,
+                exc_info=True,
+            )
 
     async def _known_room_reason(self, rules: RuleSet, user_id: str, room_id: str) -> str | None:
         """None if the room is known locally and everyone in it is allowed, else the reason."""

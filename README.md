@@ -326,8 +326,14 @@ otherwise run `mbc build` in `bot/` yourself and upload the `.mbp`.
 
 ## Cleaning up pending invites
 
-Invites that arrived before the module was enabled, or while `dry_run` was on,
-are not re-evaluated (accepting an existing invite is trusted). Run:
+A stale invite cannot be used to get in: when a protected user tries to join a
+room they were invited to, Guardian looks up **who** invited them and applies
+the current rules, so an invite that predates enforcement (or arrived during
+`dry_run`) from a now-disallowed sender is refused, and the invite is rejected
+in the background so it stops sitting in the client.
+
+Until the user acts on it the invite is still *visible*, and nothing sweeps the
+whole invite list proactively. To tidy up:
 
 ```sh
 scripts/reject_pending_invites.py --homeserver https://matrix.example.org \
@@ -354,6 +360,12 @@ leaves them, then logs the temporary token out.
 - **Server admins bypass everything.** Synapse never calls `user_may_invite`
   or `user_may_join_room` for admins. A protected account must not be an
   admin; the module logs an error (and notifies) if it is.
+- **Stale invites are visible until acted on.** The join is refused and the
+  invite rejected when a protected user tries to use one, but no background
+  sweep clears pending invites when the rules change; run
+  `scripts/reject_pending_invites.py` for that. If the inviter lookup is ever
+  unavailable (a Synapse upgrade moving the datastore), invited joins fall open
+  with a warning rather than being refused.
 - Server names with a port (`ex.org:8448`) do not match the bare glob `ex.org`.
 - Room upgrades of the control room are not followed; update `control_room`.
 - Workers: enforcement is complete on every worker (see [Workers](#workers)).

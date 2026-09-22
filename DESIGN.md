@@ -144,7 +144,7 @@ every worker runs the module at once:
 | `federated_user_may_invite(ev)`| Inbound federated invites (the ONLY hook for those in 1.161). invitee=`ev.state_key`. If protected and `ev.sender` not allowed → FORBIDDEN. |
 | `user_may_invite(i, t, room)`  | Local invites (skipped for server admins) — and, via Synapse's spam-checker dispatcher, also run for federated invites right after `federated_user_may_invite` (verified in `spamchecker_callbacks.py`). If `t` protected and `i` not allowed → FORBIDDEN. If `i` protected and `t` not allowed → FORBIDDEN. |
 | `user_may_send_3pid_invite`    | If inviter protected → FORBIDDEN.                                                                       |
-| `user_may_join_room(u, r, inv)`| Called for local *and* remote joins (alias / `via`), skipped for server admins and room creation. If `u` protected: `inv` → allow. Else apply `uninvited_joins` policy (below). |
+| `user_may_join_room(u, r, inv)`| Called for local *and* remote joins (alias / `via`), skipped for server admins and room creation. If `u` protected: `inv` → re-check the inviter (below). Else apply `uninvited_joins` policy (below). |
 | `user_may_publish_room(u, room)`| If `u` protected → FORBIDDEN (no publishing rooms to the directory).                                    |
 
 Third-party-rules callbacks:
@@ -166,6 +166,25 @@ blocked) but leaks displayname/avatar to the target room → README gap.
 sender domain vs origin, local `state_key`), so it must be defensive: return
 NOT_SPAM for anything that is not an `m.room.member` invite with a `state_key`
 we can parse, and let Synapse reject it.
+
+Invited joins (`inv` true) are **not** trusted on the strength of the invite
+alone: an invite that arrived before the module was installed, or while
+`dry_run` was on, was never vetted. `Guardian._inviter` looks up who sent the
+pending invite and the rules are applied to them; a disallowed inviter means the
+join is refused and the stale invite is rejected in the background
+(`update_room_membership` → leave; Synapse's `remote_reject_invite`
+(`handlers/room_member.py:2038-2073`) falls back to a local out-of-band leave
+when the inviting server is unreachable, so the local membership is cleaned up
+either way). `dry_run` logs and notifies without rejecting.
+
+The lookup uses `api._store.get_invite_for_local_user_in_room`, which is private
+API: `module_api.get_room_state` returns `{}` for a room this server is not in,
+which is exactly the out-of-band remote invite case that matters. It is
+contained in one helper, guarded with `getattr`, pinned by
+`guardian_tests/test_synapse_contract.py`, and **fails open** with a
+once-per-process warning — every invite arriving while we enforce has already
+been vetted on the way in, so refusing all invited joins after a Synapse
+upgrade would be worse than the gap it closes.
 
 `uninvited_joins`:
 - `deny`: always forbidden.
