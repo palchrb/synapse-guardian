@@ -14,9 +14,9 @@ from synapse.module_api import NOT_SPAM, EventBase, ModuleApi
 from synapse.module_api.errors import Codes
 
 from family_guard.config import FamilyGuardConfig
-from family_guard.notify import Notifier, NullNotifier, RoomNotifier, format_block
+from family_guard.notify import RoomNotifier, format_block
 from family_guard.policy import RuleSet
-from family_guard.publish import NullPublisher, Publisher, RoomPublisher
+from family_guard.publish import RoomPublisher
 from family_guard.store import PolicyStore
 
 logger = logging.getLogger(__name__)
@@ -38,22 +38,18 @@ class FamilyGuard:
     def __init__(self, config: FamilyGuardConfig, api: ModuleApi) -> None:
         self._api = api
         self._config = config
-        self._notifier: Notifier
+        self._notifier: RoomNotifier | None = None
         if config.notify_room:
             assert config.control_room is not None and config.notify_user is not None
             self._notifier = RoomNotifier(
                 api, config.control_room, config.notify_user, config.notify_dedupe_s
             )
-        else:
-            self._notifier = NullNotifier()
         # Tell the control room what we actually loaded, so the bot can show the
         # static baseline it cannot otherwise see. Needs somewhere to write and
         # someone to write as.
-        self._publisher: Publisher
+        self._publisher: RoomPublisher | None = None
         if config.control_room is not None and config.notify_user is not None:
             self._publisher = RoomPublisher(api, config.control_room, config.notify_user)
-        else:
-            self._publisher = NullPublisher()
         self._store = PolicyStore(
             api,
             config,
@@ -136,20 +132,23 @@ class FamilyGuard:
         """Log + notify a block; return the spam-checker verdict (honouring dry_run)."""
         dry = self._config.dry_run
         logger.info(format_block(kind, actor, target, room_id, rule, dry))
-        self._api.run_as_background_process(
-            "family_guard_notify",
-            self._notifier.notify,
-            kind,
-            actor,
-            target,
-            room_id,
-            rule,
-            dry,
-        )
+        if self._notifier is not None:
+            self._api.run_as_background_process(
+                "family_guard_notify",
+                self._notifier.notify,
+                kind,
+                actor,
+                target,
+                room_id,
+                rule,
+                dry,
+            )
         return NOT_SPAM if dry else Codes.FORBIDDEN
 
     def _on_rules_loaded(self, rules: RuleSet) -> None:
         """Publish in the background: this runs on the callback path via refresh()."""
+        if self._publisher is None:
+            return
         self._api.run_as_background_process(
             "family_guard_publish",
             self._publisher.publish,
@@ -161,6 +160,8 @@ class FamilyGuard:
 
     async def _on_admin_protected(self, user_id: str) -> None:
         # Sent in the background: this runs inside the callback path via refresh().
+        if self._notifier is None:
+            return
         self._api.run_as_background_process(
             "family_guard_notify",
             self._notifier.message,

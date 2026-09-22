@@ -653,9 +653,7 @@ class NoPublishTestCase(FamilyGuardTestCase):
     CONFIG_OVERRIDES = {"notify_user": None}
 
     def test_no_publisher_without_notify_user(self) -> None:
-        from family_guard.publish import NullPublisher
-
-        self.assertIsInstance(self.module._publisher, NullPublisher)
+        self.assertIsNone(self.module._publisher)
         self.grant_bot_state_power()
         self.force_refresh()
         self.assertEqual(len(self.published()), 0)

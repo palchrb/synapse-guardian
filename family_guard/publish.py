@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Mapping
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
 from family_guard.policy import RuleSet
 
@@ -24,18 +24,6 @@ logger = logging.getLogger(__name__)
 
 EFFECTIVE_RULES_TYPE = "family_guard.effective_rules"
 
-
-class Publisher(Protocol):
-    async def publish(
-        self, static: RuleSet, effective: RuleSet, dry_run: bool, uninvited_joins: str
-    ) -> None: ...
-
-
-class NullPublisher:
-    async def publish(
-        self, static: RuleSet, effective: RuleSet, dry_run: bool, uninvited_joins: str
-    ) -> None:
-        return None
 
 
 class RoomPublisher:

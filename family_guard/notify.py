@@ -1,17 +1,11 @@
-"""Notification sinks for blocked actions.
-
-`Notifier` is a tiny interface so that other transports (e.g. a webhook to the
-maubot plugin, `notify_via: bot`) can be dropped in later without touching the
-module logic. v1 ships `RoomNotifier` (server-side m.notice into the control
-room) and `NullNotifier`.
-"""
+"""Posting blocked actions into the control room."""
 
 from __future__ import annotations
 
 import logging
 import re
 import time
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -33,36 +27,6 @@ def sanitise(value: str) -> str:
     if len(value) > _MAX_ID_LEN:
         value = value[:_MAX_ID_LEN] + "...(truncated)"
     return _UNSAFE_CHARS_RE.sub("?", value)
-
-
-class Notifier(Protocol):
-    async def notify(
-        self,
-        kind: str,
-        actor: str,
-        target: str,
-        room_id: str | None,
-        rule: str,
-        dry_run: bool,
-    ) -> None: ...
-
-    async def message(self, text: str) -> None: ...
-
-
-class NullNotifier:
-    async def notify(
-        self,
-        kind: str,
-        actor: str,
-        target: str,
-        room_id: str | None,
-        rule: str,
-        dry_run: bool,
-    ) -> None:
-        return None
-
-    async def message(self, text: str) -> None:
-        return None
 
 
 def format_block(
