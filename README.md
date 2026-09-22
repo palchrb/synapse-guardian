@@ -44,7 +44,7 @@ Into the Python environment Synapse runs in:
 pip install git+https://github.com/<you>/family-guard.git   # or: pip install .
 ```
 
-Debian packages: use `/opt/matrix-synapse/bin/pip`. Docker: build an overlay
+Debian packages from packages.matrix.org: use `/opt/venvs/matrix-synapse/bin/pip`. Docker: build an overlay
 image:
 
 ```Dockerfile
