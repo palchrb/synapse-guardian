@@ -67,6 +67,53 @@ class Config(BaseProxyConfig):
         helper.copy("admins")
 
 
+def power_levels_and_create(
+    state: list[StateEvent],
+) -> tuple[PowerLevelStateEventContent, StateEvent | None]:
+    """Pick the power levels content and the create event out of a room's state."""
+    pl: PowerLevelStateEventContent | None = None
+    create: StateEvent | None = None
+    for event in state:
+        if event.type == EventType.ROOM_POWER_LEVELS:
+            content = event.content
+            if isinstance(content, PowerLevelStateEventContent):
+                pl = content
+        elif event.type == EventType.ROOM_CREATE:
+            create = event
+    return pl or PowerLevelStateEventContent(), create
+
+
+def event_level(pl: PowerLevelStateEventContent, event_type: EventType) -> int:
+    """Power needed to send `event_type`, matched by type string like the server does.
+
+    mautrix keys `content.events` by `EventType`, and equality includes the
+    type *class*. Deserialising an unknown type yields `Class.UNKNOWN` while we
+    look up with `Class.STATE`, so a typed lookup misses our own entries and
+    falls back to `state_default`. Synapse matches on the raw string, so a
+    typed lookup would make the bot stricter than the room actually is.
+    """
+    for known, level in pl.events.items():
+        if getattr(known, "t", known) == event_type.t:
+            return int(level)
+    return int(pl.state_default if event_type.is_state else pl.events_default)
+
+
+def user_level(
+    pl: PowerLevelStateEventContent, create: StateEvent | None, user_id: str
+) -> int:
+    """Effective power level, honouring room v12 creator power.
+
+    From room version 12 on, the creator (and anyone in `additional_creators`)
+    has effectively infinite power and is *forbidden* from appearing in
+    `content.users`, so a plain `users` lookup reports them as `users_default`
+    -- usually 0. mautrix knows this, but only when handed the create event.
+    """
+    try:
+        return pl.get_user_level(user_id, create)
+    except TypeError:  # mautrix too old to know about creator power
+        return pl.get_user_level(user_id)
+
+
 class FamilyGuardBot(Plugin):
     config: Config
 
@@ -101,13 +148,13 @@ class FamilyGuardBot(Plugin):
             await evt.reply("You are not in the bot's admin list.")
             return False
         try:
-            pl = await self.client.get_state_event(evt.room_id, EventType.ROOM_POWER_LEVELS)
+            state = await self.client.get_state(evt.room_id)
         except Exception as e:  # noqa: BLE001
-            await evt.reply(f"Could not read power levels: {e}")
+            await evt.reply(f"Could not read room state: {e}")
             return False
-        assert isinstance(pl, PowerLevelStateEventContent)
-        needed = pl.get_event_level(event_type_for(kind))
-        have = pl.get_user_level(evt.sender)
+        pl, create = power_levels_and_create(state)
+        needed = event_level(pl, event_type_for(kind))
+        have = user_level(pl, create, evt.sender)
         if have < needed:
             await evt.reply(
                 f"You cannot send this state event yourself (need PL {needed}, you have {have}), "
@@ -205,10 +252,6 @@ class FamilyGuardBot(Plugin):
             await evt.reply("Refusing: you are trying to protect yourself. Admins bypass the module's checks.")
             return
         await self.add(evt, KIND_PROTECTED_USER, mxid, reason)
-        await evt.reply(
-            "Reminder: a protected user must not be a Synapse server admin "
-            "(admins bypass invite/join checks). The module logs an error if it is."
-        )
 
     @fg.subcommand("unprotect", help="Stop protecting a user: !fg unprotect @kid:server")
     @command.argument("mxid")
