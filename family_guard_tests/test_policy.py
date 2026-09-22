@@ -103,10 +103,32 @@ def test_catch_all_accepted_in_block_lists() -> None:
     validate_pattern(KIND_BLOCKED_USER, "@*:*")
 
 
-def test_user_glob_matching_all_users_rejected_in_allow_list() -> None:
-    # "@*:*" is not a bare catch-all glob but matches every MXID; still fine in
-    # an allow list only if it is not literally everything.
-    validate_pattern(KIND_ALLOWED_USER, "@*:friends.org")
+@pytest.mark.parametrize("pattern", ["@*", "*:*", "@*:*", "*.*", "@?*:*"])
+def test_effective_catch_all_user_glob_rejected_in_allow_list(pattern: str) -> None:
+    # Not literally "*", but matches every well-formed MXID.
+    with pytest.raises(InvalidPattern):
+        validate_pattern(KIND_ALLOWED_USER, pattern)
+
+
+@pytest.mark.parametrize("pattern", ["*.*", "*?.*", "?*"])
+def test_effective_catch_all_server_glob_rejected_in_allow_list(pattern: str) -> None:
+    with pytest.raises(InvalidPattern):
+        validate_pattern(KIND_ALLOWED_SERVER, pattern)
+
+
+@pytest.mark.parametrize(
+    "kind, pattern",
+    [
+        (KIND_ALLOWED_USER, "@*:friends.org"),
+        (KIND_ALLOWED_USER, "@*e*:*"),
+        (KIND_ALLOWED_SERVER, "*.skole.no"),
+        (KIND_ALLOWED_SERVER, "*e*"),
+        (KIND_BLOCKED_USER, "@*:*"),
+        (KIND_BLOCKED_SERVER, "*.*"),
+    ],
+)
+def test_narrow_globs_and_block_lists_accepted(kind: str, pattern: str) -> None:
+    validate_pattern(kind, pattern)
 
 
 def test_pattern_over_255_ignored() -> None:

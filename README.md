@@ -33,7 +33,8 @@ So `allowed_servers: ["*.skole.no"]` + `blocked_servers: ["evil.skole.no"]`
 allows every `*.skole.no` server except `evil.skole.no`, and
 `allowed_users: ["@granny:bigserver.org"]` lets granny through even though
 `bigserver.org` is not allowed. Globs use `*` and `?` and are
-case-insensitive. Catch-all patterns (`*`) are refused in allow lists.
+case-insensitive. Catch-all patterns are refused in allow lists — not just
+`*`, but anything that matches every user or server (`@*:*`, `*.*`, `?*`).
 
 ## Installation
 
@@ -116,9 +117,11 @@ Rules are state events, one per entry. Empty content means "removed":
 | `family_guard.blocked_user`   | `troll:friends.org`            | `{"entity": "@troll:friends.org", ...}`           |
 | `family_guard.blocked_server` | `evil.skole.no`                | `{"entity": "evil.skole.no", ...}`                |
 
-The entity is read from `content.entity` (falling back to the state key).
-State keys cannot start with `@` unless the sender *is* that user, hence the
-stripped form. Changes take effect immediately on a monolith (the module
+The entity is read from `content.entity` (falling back to the state key,
+which only works for server entries since user IDs need the `@`). State keys
+cannot start with `@` unless the sender *is* that user, hence the stripped
+form. `!fg remove`/`unblock`/`unprotect` clear every entry whose entity
+matches, whatever its state key. Changes take effect immediately on a monolith (the module
 listens for new events) and within `refresh_interval_s` on other workers.
 If the room becomes unreadable, the module keeps the last known rules.
 
@@ -137,7 +140,8 @@ If the room becomes unreadable, the module keeps the last known rules.
 Hardening, so the bot can never be abused to grant rights:
 
 - `control_room` is required in the plugin config; commands anywhere else are
-  ignored without a reply.
+  ignored without a reply. (maubot itself still answers a bare `!fg` with
+  usage text in any room the bot is in — another reason to keep autojoin off.)
 - Before any change the bot reads `m.room.power_levels` and refuses unless
   the sender could send that state event type themselves.
 - Optional `admins: [...]` in the plugin config restricts further.

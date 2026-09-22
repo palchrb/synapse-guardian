@@ -120,7 +120,13 @@ class FamilyGuardBot(Plugin):
 
     async def current_entries(self, room_id: RoomID) -> list[tuple[str, str, dict[str, Any]]]:
         """(kind, entity, content) for every active entry in the room."""
-        out: list[tuple[str, str, dict[str, Any]]] = []
+        return [(k, e, c) for k, e, _, c in await self._current_state_entries(room_id)]
+
+    async def _current_state_entries(
+        self, room_id: RoomID
+    ) -> list[tuple[str, str, str, dict[str, Any]]]:
+        """(kind, entity, state_key, content) for every active entry in the room."""
+        out: list[tuple[str, str, str, dict[str, Any]]] = []
         state: list[StateEvent] = await self.client.get_state(room_id)
         for ev in state:
             t = str(ev.type)
@@ -134,7 +140,7 @@ class FamilyGuardBot(Plugin):
                 continue
             entity = content.get("entity", ev.state_key)
             if isinstance(entity, str):
-                out.append((kind, entity, content))
+                out.append((kind, entity, str(ev.state_key), content))
         return out
 
     async def write_entry(self, evt: MessageEvent, kind: str, entity: str, reason: str | None) -> None:
@@ -149,10 +155,8 @@ class FamilyGuardBot(Plugin):
             evt.room_id, event_type_for(kind), content, state_key=state_key_for(entity)
         )
 
-    async def clear_entry(self, evt: MessageEvent, kind: str, entity: str) -> None:
-        await self.client.send_state_event(
-            evt.room_id, event_type_for(kind), {}, state_key=state_key_for(entity)
-        )
+    async def clear_entry(self, evt: MessageEvent, kind: str, state_key: str) -> None:
+        await self.client.send_state_event(evt.room_id, event_type_for(kind), {}, state_key=state_key)
 
     async def add(self, evt: MessageEvent, kind: str, entity: str, reason: str | None) -> None:
         if not await self.may_mutate(evt, kind):
@@ -168,11 +172,18 @@ class FamilyGuardBot(Plugin):
     async def remove(self, evt: MessageEvent, kind: str, entity: str) -> None:
         if not await self.may_mutate(evt, kind):
             return
-        existing = {(k, e) for k, e, _ in await self.current_entries(evt.room_id)}
-        if (kind, entity) not in existing:
+        # Clear by the *actual* state key(s) of matching entries: a hand-written
+        # event may use a different key than the one the bot would derive.
+        keys = [
+            sk
+            for k, e, sk, _ in await self._current_state_entries(evt.room_id)
+            if k == kind and e.lower() == entity.lower()
+        ]
+        if not keys:
             await evt.reply(f"No active {kind} entry for `{entity}`.")
             return
-        await self.clear_entry(evt, kind, entity)
+        for state_key in keys:
+            await self.clear_entry(evt, kind, state_key)
         await evt.reply(f"Removed {kind} `{entity}`.")
 
     # --- commands ------------------------------------------------------------

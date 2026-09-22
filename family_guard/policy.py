@@ -75,9 +75,26 @@ class Rule:
         return f"{self.kind}:{self.pattern}"
 
 
-def is_catch_all(pattern: str) -> bool:
-    """True if the glob matches every string (e.g. `*`, `?*`, `**`)."""
-    return _WILDCARDS_RE.sub("", pattern) == ""
+# Two unrelated, well-formed subjects per kind. A glob that matches both of
+# them matches (practically) every MXID / server name, e.g. `@*:*` or `*.*`.
+_CATCH_ALL_PROBES = {
+    "user": ("@q:q.q", "@z:z.z"),
+    "server": ("q.q", "z.z"),
+}
+
+
+def is_catch_all(pattern: str, kind: str | None = None) -> bool:
+    """True if the glob matches every string (`*`, `?*`, `**`), or — when
+    `kind` is a user/server kind — every well-formed subject of that kind."""
+    if _WILDCARDS_RE.sub("", pattern) == "":
+        return True
+    probes = _CATCH_ALL_PROBES.get(
+        "user" if kind in USER_KINDS else "server" if kind in SERVER_KINDS else ""
+    )
+    if probes is None:
+        return False
+    regex = glob_to_regex(pattern)
+    return all(regex.match(probe) for probe in probes)
 
 
 def server_of(user_id: str) -> str:
@@ -107,7 +124,7 @@ def validate_pattern(kind: str, pattern: str) -> None:
         raise InvalidPattern("pattern longer than 255 characters")
     if pattern.split() != [pattern]:
         raise InvalidPattern("pattern contains whitespace")
-    if kind in ALLOW_KINDS and is_catch_all(pattern):
+    if kind in ALLOW_KINDS and is_catch_all(pattern, kind):
         raise InvalidPattern("catch-all pattern is not allowed in an allow list")
     if kind == KIND_PROTECTED_USER:
         if not is_user_id(pattern):
