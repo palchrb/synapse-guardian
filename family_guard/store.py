@@ -64,6 +64,11 @@ class PolicyStore:
     def invalidate(self) -> None:
         self._stale = True
 
+    @property
+    def cached(self) -> RuleSet | None:
+        """Last loaded rules without triggering a refresh (None before first load)."""
+        return self._rules
+
     async def get_rules(self) -> RuleSet:
         """Return the current rule set, refreshing lazily on staleness or TTL."""
         expired = self._clock() - self._loaded_at >= self._config.refresh_interval_s

@@ -200,7 +200,7 @@ class FamilyGuard:
     async def _fail_closed_if_protected(self, *user_ids: str | None) -> Any:
         """After an unexpected error: deny if any involved user is (statically) protected."""
         static = self._config.static_rules
-        cached = self._store._rules
+        cached = self._store.cached
         for user_id in user_ids:
             if user_id is None:
                 continue
