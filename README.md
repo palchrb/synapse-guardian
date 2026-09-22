@@ -262,3 +262,11 @@ make synapse-tests   # sparse checkout of Synapse's tests/ package (not shipped 
 make test            # pytest (policy, store) + trial (end-to-end HomeserverTestCase)
 make lint
 ```
+
+[`docs/callbacks.md`](docs/callbacks.md) is a verified inventory of every
+Synapse module callback relevant here: what each one costs, whether it fires for
+local or federated events, which ones server admins bypass, and why we use or
+avoid each. The upstream docs cover none of that. It is pinned by
+`family_guard_tests/test_synapse_contract.py` — **after upgrading Synapse, run
+`make test-unit`**, which fails with an actionable message if an assumption in
+that document stopped holding.

@@ -719,3 +719,102 @@ class ResilienceTestCase(FamilyGuardTestCase):
         room_id = self.helper.create_room_as(self.kid, is_public=False, tok=self.kid_tok)
         self.helper.send(room_id, body="hi", tok=self.kid_tok)
         self.helper.send_state(room_id, EventTypes.Name, {"name": "mine"}, tok=self.kid_tok)
+
+
+class CallbackCostTestCase(FamilyGuardTestCase):
+    """Pin the database cost of our callbacks.
+
+    `docs/callbacks.md` claims the spam-checker callbacks we register add no
+    per-call database work once the rule set is cached. That claim is the whole
+    basis for saying the module is safe to run on a busy server, so it is
+    asserted here rather than trusted: a regression (an uncached lookup slipped
+    into a hot callback) fails in CI instead of in production.
+
+    Synapse wraps each spam-checker callback in `Measure(...)`
+    (spamchecker_callbacks.py:370 and 13 more), which attributes database
+    transactions to a block named after the callback, so we can read the cost
+    straight off the metric Synapse already exports.
+    """
+
+    def _block_name(self, method: str) -> str:
+        return f"family_guard.module.FamilyGuard.{method}"
+
+    def _db_txns(self, method: str) -> float:
+        from synapse.metrics import SERVER_NAME_LABEL
+        from synapse.util.metrics import block_db_txn_count
+
+        labels = {"block_name": self._block_name(method), SERVER_NAME_LABEL: SERVER}
+        return block_db_txn_count.labels(**labels)._value.get()
+
+    def _calls(self, method: str) -> float:
+        from synapse.metrics import SERVER_NAME_LABEL
+        from synapse.util.metrics import block_counter
+
+        labels = {"block_name": self._block_name(method), SERVER_NAME_LABEL: SERVER}
+        return block_counter.labels(**labels)._value.get()
+
+    def assert_cost(self, method: str, run: Any, max_txns: int) -> None:
+        self.get_success(self.module._rules())  # warm the cache, as in steady state
+        before_txns, before_calls = self._db_txns(method), self._calls(method)
+        run()
+        calls = self._calls(method) - before_calls
+        txns = self._db_txns(method) - before_txns
+        self.assertGreater(calls, 0, f"{method} was not actually called")
+        self.assertLessEqual(
+            txns,
+            max_txns,
+            f"{method} performed {txns} database transactions over {calls} call(s), "
+            f"budget is {max_txns}. A hot callback started hitting the database. "
+            f"See the cost table in docs/callbacks.md.",
+        )
+
+    def test_user_may_invite_makes_no_db_queries(self) -> None:
+        """Local invite, so no profile fetch or federation is involved."""
+        room_id = self.helper.create_room_as(
+            self.sibling, is_public=False, tok=self.sibling_tok
+        )
+        self.assert_cost(
+            "user_may_invite",
+            lambda: self.helper.invite(
+                room_id, self.sibling, self.kid, tok=self.sibling_tok
+            ),
+            max_txns=0,
+        )
+
+    def test_federated_user_may_invite_makes_no_db_queries(self) -> None:
+        self.assert_cost(
+            "federated_user_may_invite",
+            lambda: self.assert_federated_invite_blocked("@stranger:stranger.org"),
+            max_txns=0,
+        )
+
+    def test_user_may_send_state_event_makes_no_db_queries(self) -> None:
+        room_id = self.helper.create_room_as(self.kid, is_public=False, tok=self.kid_tok)
+        self.assert_cost(
+            "user_may_send_state_event",
+            lambda: self.helper.send_state(
+                room_id,
+                EventTypes.JoinRules,
+                {"join_rule": JoinRules.PUBLIC},
+                tok=self.kid_tok,
+                expect_code=403,
+            ),
+            max_txns=0,
+        )
+
+    def test_no_third_party_rules_callbacks_under_default_config(self) -> None:
+        """The structural property behind the cost claim.
+
+        Registering *any* third-party-rules callback makes Synapse load room
+        state for every event, server-wide, before our code runs — and that
+        pre-work happens outside any Measure block, so no metric would ever
+        show it (docs/callbacks.md, "Observability").
+        """
+        callbacks = self.hs.get_module_api_callbacks().third_party_event_rules
+        self.assertEqual(
+            callbacks._check_event_allowed_callbacks,
+            [],
+            "A check_event_allowed callback is registered under default config. "
+            "That costs a full room-state load per event, server-wide. "
+            "See docs/callbacks.md.",
+        )

@@ -18,8 +18,10 @@ synapse-tests:
 	  git -C $(SYNAPSE_TESTS_DIR) sparse-checkout set tests; \
 	fi
 
+# Collect the whole directory (minus the trial-only suite) so a new test file
+# is never silently left out of `make test`.
 test-unit:
-	$(PYTEST) family_guard_tests/test_policy.py family_guard_tests/test_store.py
+	$(PYTEST) family_guard_tests --ignore=family_guard_tests/test_module.py
 
 test-module: synapse-tests
 	PYTHONPATH=$(SYNAPSE_TESTS_DIR) $(PY) -m twisted.trial family_guard_tests.test_module

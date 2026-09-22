@@ -112,7 +112,10 @@ in the module API (`__init__` is sync), so loading is lazy:
 ## Callbacks (spam checker) and semantics
 
 Verified against Synapse 1.161 source (`synapse/handlers/room_member.py`,
-`synapse/handlers/federation.py`):
+`synapse/handlers/federation.py`). [`docs/callbacks.md`](docs/callbacks.md)
+holds the full inventory — every callback, its dispatcher cost, admin bypasses,
+and the reasoning for using or avoiding it — pinned by
+`family_guard_tests/test_synapse_contract.py`:
 
 | callback                       | logic                                                                                                   |
 |--------------------------------|---------------------------------------------------------------------------------------------------------|
