@@ -3,8 +3,8 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "family-guard"
-version = "0.3.2"
+name = "synapse-guardian"
+version = "0.4.0"
 description = "Synapse module restricting which homeservers/users protected local accounts can federate with"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,8 +28,8 @@ dev = [
 bot = ["maubot>=0.6"]
 
 [tool.setuptools]
-packages = ["family_guard"]
+packages = ["synapse_guardian"]
 
 [tool.pytest.ini_options]
-testpaths = ["family_guard_tests"]
+testpaths = ["guardian_tests"]
 addopts = "-q -p no:maubot"  # maubot (optional bot extra) registers a pytest plugin needing pytest-asyncio

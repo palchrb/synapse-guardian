@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bot"))
 
 from mautrix.types import StateEvent  # noqa: E402
 
-from family_guard_bot import (  # noqa: E402
+from guardian_bot import (  # noqa: E402
     entries_from_state,
     published_payload,
     resolve_user_arg,
@@ -47,7 +47,7 @@ def pill(mxid: str, text: str) -> str:
 
 def test_pill_resolves_to_mxid() -> None:
     assert (
-        resolve_user_arg("palchrb", f"!fg check {pill('@palchrb:vibb.me', 'palchrb')}")
+        resolve_user_arg("palchrb", f"!guard check {pill('@palchrb:vibb.me', 'palchrb')}")
         == "@palchrb:vibb.me"
     )
 
@@ -55,13 +55,13 @@ def test_pill_resolves_to_mxid() -> None:
 def test_explicit_mxid_beats_a_mismatched_pill() -> None:
     """An MXID typed in full stays in `body` and must never be overridden."""
     assert (
-        resolve_user_arg("@matthew:matrix.org", f"!fg check {pill('@someone:else.org', 'x')}")
+        resolve_user_arg("@matthew:matrix.org", f"!guard check {pill('@someone:else.org', 'x')}")
         == "@matthew:matrix.org"
     )
 
 
 def test_two_pills_resolve_by_anchor_text() -> None:
-    body = f"!fg allow user {pill('@a:one.org', 'alice')} {pill('@b:two.org', 'bob')}"
+    body = f"!guard allow user {pill('@a:one.org', 'alice')} {pill('@b:two.org', 'bob')}"
     assert resolve_user_arg("bob", body) == "@b:two.org"
     assert resolve_user_arg("alice", body) == "@a:one.org"
 
@@ -115,8 +115,8 @@ def test_event_link_is_not_a_user() -> None:
 
 def test_entries_from_state_reads_rule_events() -> None:
     state = [
-        state_event("family_guard.allowed_server", "friends.org", {"entity": "friends.org"}),
-        state_event("family_guard.protected_user", "kid:vibb.me", {"entity": "@kid:vibb.me"}),
+        state_event("guardian.allowed_server", "friends.org", {"entity": "friends.org"}),
+        state_event("guardian.protected_user", "kid:vibb.me", {"entity": "@kid:vibb.me"}),
         state_event("m.room.name", "", {"name": "Control"}),
     ]
     got = {(kind, entity) for kind, entity, _, _ in entries_from_state(state)}
@@ -125,16 +125,16 @@ def test_entries_from_state_reads_rule_events() -> None:
 
 def test_entries_from_state_skips_removed_and_unknown_kinds() -> None:
     state = [
-        state_event("family_guard.allowed_server", "gone.org", {}),
-        state_event("family_guard.bogus", "x", {"entity": "x"}),
-        state_event("family_guard.effective_rules", "", {"static": {}}),
+        state_event("guardian.allowed_server", "gone.org", {}),
+        state_event("guardian.bogus", "x", {"entity": "x"}),
+        state_event("guardian.effective_rules", "", {"static": {}}),
     ]
     assert entries_from_state(state) == []
 
 
 def test_published_payload_found_and_absent() -> None:
     payload = {"static": {"allowed_servers": ["vibb.me"]}, "effective": {}}
-    assert published_payload([state_event("family_guard.effective_rules", "", payload)]) == payload
+    assert published_payload([state_event("guardian.effective_rules", "", payload)]) == payload
     assert published_payload([state_event("m.room.name", "", {"name": "x"})]) is None
     assert published_payload([]) is None
 

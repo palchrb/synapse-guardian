@@ -1,4 +1,4 @@
-# Room ID of the family_guard control room. Required. Commands sent anywhere
+# Room ID of the guardian control room. Required. Commands sent anywhere
 # else are ignored without a reply.
 control_room: "!changeme:example.org"
 

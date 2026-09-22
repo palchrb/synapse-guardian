@@ -1,10 +1,10 @@
 maubot: 0.6.0
-id: no.vibb.family_guard
-version: 0.3.1
+id: no.vibb.guardian
+version: 0.4.0
 license: AGPL-3.0-or-later
 modules:
-  - family_guard_bot
-main_class: FamilyGuardBot
+  - guardian_bot
+main_class: GuardianBot
 extra_files:
   - base-config.yaml
 config: true

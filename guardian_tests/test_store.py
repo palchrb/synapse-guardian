@@ -5,8 +5,8 @@ from typing import Any
 
 import pytest
 
-from family_guard.config import ConfigError, FamilyGuardConfig
-from family_guard.store import PolicyStore
+from synapse_guardian.config import ConfigError, GuardianConfig
+from synapse_guardian.store import PolicyStore
 
 SERVER = "example.org"
 ROOM = "!ctl:example.org"
@@ -45,8 +45,8 @@ class FakeApi:
         if content is None:
             content = {"entity": key, "added_by": sender}
         state_key = key[1:] if key.startswith("@") else key
-        self.state[("family_guard." + kind, state_key)] = SimpleNamespace(
-            type="family_guard." + kind, state_key=state_key, sender=sender, content=content
+        self.state[("guardian." + kind, state_key)] = SimpleNamespace(
+            type="guardian." + kind, state_key=state_key, sender=sender, content=content
         )
 
 
@@ -63,7 +63,7 @@ def make_store(
 ) -> PolicyStore:
     cfg.setdefault("control_room", ROOM)
     cfg.setdefault("allowed_servers", [SERVER])
-    config = FamilyGuardConfig.parse(cfg)
+    config = GuardianConfig.parse(cfg)
     return PolicyStore(api, config, clock=clock or FakeClock(), on_admin_protected=on_admin)
 
 
@@ -151,7 +151,7 @@ def test_invalid_state_key_skipped_logged(caplog: pytest.LogCaptureFixture) -> N
     api.put("allowed_server", "*")  # catch-all in allow list
     api.put("protected_user", "not-a-user")
     api.put("allowed_server", "friends.org")
-    with caplog.at_level(logging.WARNING, logger="family_guard.store"):
+    with caplog.at_level(logging.WARNING, logger="synapse_guardian.store"):
         rules = run(make_store(api).get_rules())
     assert rules.evaluate("@a:friends.org").allowed
     assert not rules.evaluate("@a:anything.org").allowed
@@ -173,8 +173,8 @@ def test_unknown_event_types_ignored() -> None:
     api.state[("m.room.member", "@x:example.org")] = SimpleNamespace(
         type="m.room.member", state_key="@x:example.org", sender=ADMIN, content={"membership": "join"}
     )
-    api.state[("family_guard.bogus", "friends.org")] = SimpleNamespace(
-        type="family_guard.bogus", state_key="friends.org", sender=ADMIN, content={"x": 1}
+    api.state[("guardian.bogus", "friends.org")] = SimpleNamespace(
+        type="guardian.bogus", state_key="friends.org", sender=ADMIN, content={"x": 1}
     )
     rules = run(make_store(api).get_rules())
     assert not rules.evaluate("@a:friends.org").allowed
@@ -227,7 +227,7 @@ def test_invalidate_rebuilds() -> None:
 
 
 def test_is_our_event_type() -> None:
-    assert PolicyStore.is_our_event_type("family_guard.allowed_server")
+    assert PolicyStore.is_our_event_type("guardian.allowed_server")
     assert not PolicyStore.is_our_event_type("m.room.message")
 
 
@@ -240,7 +240,7 @@ def test_admin_protected_user_warned_once(caplog: pytest.LogCaptureFixture) -> N
         notified.append(user_id)
 
     store = make_store(api, on_admin=on_admin, protected_users=["@kid:example.org"])
-    with caplog.at_level(logging.ERROR, logger="family_guard.store"):
+    with caplog.at_level(logging.ERROR, logger="synapse_guardian.store"):
         run(store.refresh())
         run(store.refresh())
     assert notified == ["@kid:example.org"]
@@ -252,33 +252,33 @@ def test_admin_protected_user_warned_once(caplog: pytest.LogCaptureFixture) -> N
 
 def test_parse_config_rejects_unknown_policy() -> None:
     with pytest.raises(ConfigError):
-        FamilyGuardConfig.parse({"uninvited_joins": "maybe"})
+        GuardianConfig.parse({"uninvited_joins": "maybe"})
 
 
 def test_parse_config_rejects_catch_all_allow() -> None:
     with pytest.raises(ConfigError):
-        FamilyGuardConfig.parse({"allowed_servers": ["*"]})
+        GuardianConfig.parse({"allowed_servers": ["*"]})
 
 
 def test_parse_config_rejects_bad_control_room() -> None:
     with pytest.raises(ConfigError):
-        FamilyGuardConfig.parse({"control_room": "#alias:example.org"})
+        GuardianConfig.parse({"control_room": "#alias:example.org"})
 
 
 def test_parse_config_notify_requires_user_and_room() -> None:
     with pytest.raises(ConfigError):
-        FamilyGuardConfig.parse({"notify_room": True, "control_room": ROOM})
+        GuardianConfig.parse({"notify_room": True, "control_room": ROOM})
     with pytest.raises(ConfigError):
-        FamilyGuardConfig.parse({"notify_room": True, "notify_user": BOT})
+        GuardianConfig.parse({"notify_room": True, "notify_user": BOT})
 
 
 def test_parse_config_rejects_unknown_keys() -> None:
     with pytest.raises(ConfigError):
-        FamilyGuardConfig.parse({"protected": []})
+        GuardianConfig.parse({"protected": []})
 
 
 def test_parse_config_defaults() -> None:
-    cfg = FamilyGuardConfig.parse(None)
+    cfg = GuardianConfig.parse(None)
     assert cfg.uninvited_joins == "known_rooms"
     assert cfg.refresh_interval_s == 15
     assert cfg.notify_dedupe_s == 300
@@ -290,10 +290,10 @@ def test_parse_config_defaults() -> None:
 
 
 def test_parse_config_watch_control_room_can_be_enabled() -> None:
-    cfg = FamilyGuardConfig.parse({"control_room": "!r:test", "watch_control_room": True})
+    cfg = GuardianConfig.parse({"control_room": "!r:test", "watch_control_room": True})
     assert cfg.watch_control_room
 
 
 def test_parse_config_rejects_non_bool_watch_control_room() -> None:
     with pytest.raises(ConfigError):
-        FamilyGuardConfig.parse({"watch_control_room": "yes"})
+        GuardianConfig.parse({"watch_control_room": "yes"})

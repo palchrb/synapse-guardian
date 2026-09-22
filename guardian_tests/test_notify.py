@@ -2,7 +2,7 @@
 
 import asyncio
 
-from family_guard.notify import (
+from synapse_guardian.notify import (
     MAX_NOTICES_PER_WINDOW,
     MAX_RECENT,
     RoomNotifier,
@@ -45,7 +45,7 @@ def test_sanitise_strips_newlines_and_truncates() -> None:
 
 def test_format_block_cannot_forge_a_log_line() -> None:
     line = format_block(
-        "invite", "@a\nfamily_guard: blocked nothing:x.org", "@kid:h.org", None, "r", False
+        "invite", "@a\nguardian: blocked nothing:x.org", "@kid:h.org", None, "r", False
     )
     assert "\n" not in line
 

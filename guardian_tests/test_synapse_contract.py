@@ -16,7 +16,7 @@ from synapse.module_api import NOT_SPAM, ModuleApi
 from synapse.module_api.callbacks import spamchecker_callbacks
 from synapse.module_api.errors import Codes
 
-from family_guard.module import FamilyGuard
+from synapse_guardian.module import Guardian
 
 DOC = "docs/callbacks.md"
 
@@ -88,14 +88,14 @@ def test_our_callbacks_accept_the_arity_synapse_passes() -> None:
     in the doc.
     """
     for name, arity in {**SPAM_CHECKER_ARITY, **THIRD_PARTY_ARITY}.items():
-        method = getattr(FamilyGuard, name, None)
+        method = getattr(Guardian, name, None)
         assert method is not None, (
-            f"FamilyGuard.{name} is gone but {DOC} still lists it as used."
+            f"Guardian.{name} is gone but {DOC} still lists it as used."
         )
         # Unbound here, so self counts as one positional parameter.
         actual = _positional_arity(method) - 1
         assert actual == arity, (
-            f"FamilyGuard.{name} takes {actual} positional args but Synapse "
+            f"Guardian.{name} takes {actual} positional args but Synapse "
             f"passes {arity}. See the signature table in {DOC}."
         )
 
@@ -120,7 +120,7 @@ def test_synapse_type_aliases_still_declare_that_arity() -> None:
 def test_dispatchers_do_not_catch_callback_exceptions() -> None:
     """Our callbacks must never raise; this is why.
 
-    If Synapse ever starts catching, the `try/except` in every FamilyGuard
+    If Synapse ever starts catching, the `try/except` in every Guardian
     callback becomes belt-and-braces rather than load-bearing -- worth knowing,
     but do not remove them on the strength of this test alone.
     """
@@ -151,5 +151,5 @@ def test_bare_codes_return_is_still_normalised_by_the_dispatcher() -> None:
     source = inspect.getsource(spamchecker_callbacks.SpamCheckerModuleApiCallbacks.user_may_invite)
     assert "isinstance(res, synapse.api.errors.Codes)" in source, (
         "The dispatcher no longer normalises a bare Codes return value. "
-        f"FamilyGuard._block returns one. See {DOC}."
+        f"Guardian._block returns one. See {DOC}."
     )

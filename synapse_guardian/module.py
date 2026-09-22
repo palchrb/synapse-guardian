@@ -1,4 +1,4 @@
-"""FamilyGuard: the Synapse module. Registers the callbacks and applies the rules.
+"""Guardian: the Synapse module. Registers the callbacks and applies the rules.
 
 Never raises out of a callback: unexpected errors fail closed for protected
 users and open for everyone else.
@@ -13,11 +13,11 @@ from typing import Any
 from synapse.module_api import NOT_SPAM, EventBase, ModuleApi
 from synapse.module_api.errors import Codes
 
-from family_guard.config import FamilyGuardConfig
-from family_guard.notify import RoomNotifier, format_block
-from family_guard.policy import RuleSet
-from family_guard.publish import RoomPublisher
-from family_guard.store import PolicyStore
+from synapse_guardian.config import GuardianConfig
+from synapse_guardian.notify import RoomNotifier, format_block
+from synapse_guardian.policy import RuleSet
+from synapse_guardian.publish import RoomPublisher
+from synapse_guardian.store import PolicyStore
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +34,8 @@ ALIAS = "alias"
 CREATE_ROOM = "create-room"
 
 
-class FamilyGuard:
-    def __init__(self, config: FamilyGuardConfig, api: ModuleApi) -> None:
+class Guardian:
+    def __init__(self, config: GuardianConfig, api: ModuleApi) -> None:
         self._api = api
         self._config = config
         self._notifier: RoomNotifier | None = None
@@ -94,14 +94,14 @@ class FamilyGuard:
             api.register_third_party_rules_callbacks(**callbacks)
         # Rules load lazily, on the first callback. Without a nudge, a server
         # that sees no invite or join after a restart never loads them -- and so
-        # never publishes `family_guard.effective_rules` either, leaving the bot
+        # never publishes `guardian.effective_rules` either, leaving the bot
         # blind to the static rules. Warm up shortly after start-up instead.
         if config.control_room is not None:
             api.delayed_background_call(
-                100, self._warm_up, desc="family_guard_warm_up"
+                100, self._warm_up, desc="guardian_warm_up"
             )
         logger.info(
-            "family_guard: loaded (control_room=%s, watching=%s, strict_local_events=%s, "
+            "guardian: loaded (control_room=%s, watching=%s, strict_local_events=%s, "
             "uninvited_joins=%s, dry_run=%s)",
             config.control_room,
             self._watching_control_room,
@@ -115,11 +115,11 @@ class FamilyGuard:
         try:
             await self._store.get_rules()
         except Exception:
-            logger.exception("family_guard: initial rule load failed")
+            logger.exception("guardian: initial rule load failed")
 
     @staticmethod
-    def parse_config(config: dict[str, Any] | None) -> FamilyGuardConfig:
-        return FamilyGuardConfig.parse(config)
+    def parse_config(config: dict[str, Any] | None) -> GuardianConfig:
+        return GuardianConfig.parse(config)
 
     # --- helpers -----------------------------------------------------------
 
@@ -134,7 +134,7 @@ class FamilyGuard:
         logger.info(format_block(kind, actor, target, room_id, rule, dry))
         if self._notifier is not None:
             self._api.run_as_background_process(
-                "family_guard_notify",
+                "guardian_notify",
                 self._notifier.notify,
                 kind,
                 actor,
@@ -150,7 +150,7 @@ class FamilyGuard:
         if self._publisher is None:
             return
         self._api.run_as_background_process(
-            "family_guard_publish",
+            "guardian_publish",
             self._publisher.publish,
             self._config.static_rules,
             rules,
@@ -163,9 +163,9 @@ class FamilyGuard:
         if self._notifier is None:
             return
         self._api.run_as_background_process(
-            "family_guard_notify",
+            "guardian_notify",
             self._notifier.message,
-            f"family_guard: WARNING protected user {user_id} is a server admin; "
+            f"guardian: WARNING protected user {user_id} is a server admin; "
             "Synapse skips invite/join checks for admins, so this user is NOT protected",
         )
 
@@ -189,7 +189,7 @@ class FamilyGuard:
                 return NOT_SPAM
             return self._block(INVITE_IN, inviter, invitee, event.room_id, decision.reason)
         except Exception:
-            logger.exception("family_guard: federated_user_may_invite failed")
+            logger.exception("guardian: federated_user_may_invite failed")
             return await self._fail_closed_if_protected(invitee)
 
     async def user_may_invite(self, inviter: str, invitee: str, room_id: str) -> Any:
@@ -206,7 +206,7 @@ class FamilyGuard:
                     return self._block(INVITE_OUT, inviter, invitee, room_id, decision.reason)
             return NOT_SPAM
         except Exception:
-            logger.exception("family_guard: user_may_invite failed")
+            logger.exception("guardian: user_may_invite failed")
             return await self._fail_closed_if_protected(inviter, invitee)
 
     async def user_may_send_3pid_invite(
@@ -220,7 +220,7 @@ class FamilyGuard:
                 )
             return NOT_SPAM
         except Exception:
-            logger.exception("family_guard: user_may_send_3pid_invite failed")
+            logger.exception("guardian: user_may_send_3pid_invite failed")
             return await self._fail_closed_if_protected(inviter)
 
     async def user_may_join_room(self, user_id: str, room_id: str, is_invited: bool) -> Any:
@@ -237,7 +237,7 @@ class FamilyGuard:
                 return NOT_SPAM
             return self._block(JOIN, user_id, room_id, room_id, reason)
         except Exception:
-            logger.exception("family_guard: user_may_join_room failed")
+            logger.exception("guardian: user_may_join_room failed")
             return await self._fail_closed_if_protected(user_id)
 
     async def _known_room_reason(self, rules: RuleSet, user_id: str, room_id: str) -> str | None:
@@ -278,7 +278,7 @@ class FamilyGuard:
                 return NOT_SPAM
             return self._block(CREATE_ROOM, user_id, reason, None, f"{reason}-disabled")
         except Exception:
-            logger.exception("family_guard: user_may_create_room failed")
+            logger.exception("guardian: user_may_create_room failed")
             return await self._fail_closed_if_protected(user_id)
 
     @staticmethod
@@ -315,7 +315,7 @@ class FamilyGuard:
                 )
             return NOT_SPAM
         except Exception:
-            logger.exception("family_guard: user_may_create_room_alias failed")
+            logger.exception("guardian: user_may_create_room_alias failed")
             return await self._fail_closed_if_protected(user_id)
 
     async def user_may_send_state_event(
@@ -341,7 +341,7 @@ class FamilyGuard:
                 return NOT_SPAM
             return self._block(kind, user_id, room_id, room_id, f"{kind}-disabled")
         except Exception:
-            logger.exception("family_guard: user_may_send_state_event failed")
+            logger.exception("guardian: user_may_send_state_event failed")
             return await self._fail_closed_if_protected(user_id)
 
     async def user_may_publish_room(self, user_id: str, room_id: str) -> Any:
@@ -351,7 +351,7 @@ class FamilyGuard:
                 return self._block(PUBLISH, user_id, room_id, room_id, "publishing-disabled")
             return NOT_SPAM
         except Exception:
-            logger.exception("family_guard: user_may_publish_room failed")
+            logger.exception("guardian: user_may_publish_room failed")
             return await self._fail_closed_if_protected(user_id)
 
     async def _fail_closed_if_protected(self, *user_ids: str | None) -> Any:
@@ -391,7 +391,7 @@ class FamilyGuard:
             verdict = self._block(kind, sender, event.room_id, event.room_id, f"{kind}-disabled")
             return (verdict == NOT_SPAM), None
         except Exception:
-            logger.exception("family_guard: check_event_allowed failed")
+            logger.exception("guardian: check_event_allowed failed")
             verdict = await self._fail_closed_if_protected(sender)
             return (verdict == NOT_SPAM), None
 
@@ -402,4 +402,4 @@ class FamilyGuard:
             ):
                 self._store.invalidate()
         except Exception:
-            logger.exception("family_guard: on_new_event failed")
+            logger.exception("guardian: on_new_event failed")

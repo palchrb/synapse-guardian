@@ -1,4 +1,4 @@
-"""maubot plugin: manage family_guard rules as state events in the control room.
+"""maubot plugin: manage guardian rules as state events in the control room.
 
 Hardening principle: the bot never grants anyone a right they do not already
 have in the room. Every command is silently ignored outside `control_room`,
@@ -20,7 +20,7 @@ from maubot.handlers import command
 from mautrix.types import EventType, PowerLevelStateEventContent, RoomID, StateEvent
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 
-# vendored copy of family_guard/policy.py (see `make bot-build`)
+# vendored copy of synapse_guardian/policy.py (see `make bot-build`)
 from .policy import (
     KIND_ALLOWED_SERVER,
     KIND_ALLOWED_USER,
@@ -33,10 +33,10 @@ from .policy import (
     validate_pattern,
 )
 
-EVENT_TYPE_PREFIX = "family_guard."
+EVENT_TYPE_PREFIX = "guardian."
 # Published by the module: the rule set it actually loaded, including the
 # homeserver.yaml baseline we cannot see from here.
-EFFECTIVE_RULES_TYPE = "family_guard.effective_rules"
+EFFECTIVE_RULES_TYPE = "guardian.effective_rules"
 KINDS = (
     KIND_PROTECTED_USER,
     KIND_ALLOWED_SERVER,
@@ -160,7 +160,7 @@ def entries_from_state(state: list[StateEvent]) -> list[tuple[str, str, str, dic
 
 
 def published_payload(state: list[StateEvent]) -> dict[str, Any] | None:
-    """The module's `family_guard.effective_rules` content, or None if absent."""
+    """The module's `guardian.effective_rules` content, or None if absent."""
     for ev in state:
         if str(ev.type) == EFFECTIVE_RULES_TYPE and str(ev.state_key) == "":
             content = _content_dict(ev.content)
@@ -235,7 +235,7 @@ def user_level(
         return pl.get_user_level(user_id)
 
 
-class FamilyGuardBot(Plugin):
+class GuardianBot(Plugin):
     config: Config
 
     @classmethod
@@ -245,7 +245,7 @@ class FamilyGuardBot(Plugin):
     async def start(self) -> None:
         self.config.load_and_update()
         if not self.config["control_room"]:
-            self.log.error("family_guard_bot: control_room is not configured; refusing all commands")
+            self.log.error("guardian_bot: control_room is not configured; refusing all commands")
 
     # --- guards --------------------------------------------------------------
 
@@ -341,11 +341,11 @@ class FamilyGuardBot(Plugin):
 
     # --- commands ------------------------------------------------------------
 
-    @command.new(name="fg", help="family_guard rules", require_subcommand=True)
-    async def fg(self, evt: MessageEvent) -> None:
+    @command.new(name="guard", help="guardian rules", require_subcommand=True)
+    async def guard(self, evt: MessageEvent) -> None:
         pass
 
-    @fg.subcommand("protect", help="Protect a local user: !fg protect @kid:server [reason]")
+    @guard.subcommand("protect", help="Protect a local user: !guard protect @kid:server [reason]")
     @command.argument("mxid")
     @command.argument("reason", required=False, pass_raw=True)
     async def protect(self, evt: MessageEvent, mxid: str, reason: str | None) -> None:
@@ -360,7 +360,7 @@ class FamilyGuardBot(Plugin):
             return
         await self.add(evt, KIND_PROTECTED_USER, mxid, reason)
 
-    @fg.subcommand("unprotect", help="Stop protecting a user: !fg unprotect @kid:server")
+    @guard.subcommand("unprotect", help="Stop protecting a user: !guard unprotect @kid:server")
     @command.argument("mxid")
     async def unprotect(self, evt: MessageEvent, mxid: str) -> None:
         if not self.in_control_room(evt):
@@ -368,27 +368,27 @@ class FamilyGuardBot(Plugin):
         mxid = resolve_user_arg(mxid, formatted_body_of(evt))
         await self.remove(evt, KIND_PROTECTED_USER, mxid)
 
-    @fg.subcommand("allow", help="Allow a server or user: !fg allow server <glob> | !fg allow user <mxid|glob> [reason]")
+    @guard.subcommand("allow", help="Allow a server or user: !guard allow server <glob> | !guard allow user <mxid|glob> [reason]")
     @command.argument("what")
     @command.argument("pattern")
     @command.argument("reason", required=False, pass_raw=True)
     async def allow(self, evt: MessageEvent, what: str, pattern: str, reason: str | None) -> None:
         await self._verb(evt, "allow", what, pattern, reason)
 
-    @fg.subcommand("block", help="Block a server or user: !fg block server <glob> | !fg block user <mxid|glob> [reason]")
+    @guard.subcommand("block", help="Block a server or user: !guard block server <glob> | !guard block user <mxid|glob> [reason]")
     @command.argument("what")
     @command.argument("pattern")
     @command.argument("reason", required=False, pass_raw=True)
     async def block(self, evt: MessageEvent, what: str, pattern: str, reason: str | None) -> None:
         await self._verb(evt, "block", what, pattern, reason)
 
-    @fg.subcommand("remove", help="Remove an allow entry: !fg remove server <glob> | !fg remove user <mxid|glob>")
+    @guard.subcommand("remove", help="Remove an allow entry: !guard remove server <glob> | !guard remove user <mxid|glob>")
     @command.argument("what")
     @command.argument("pattern")
     async def remove_cmd(self, evt: MessageEvent, what: str, pattern: str) -> None:
         await self._verb(evt, "remove", what, pattern, None)
 
-    @fg.subcommand("unblock", help="Remove a block entry: !fg unblock server <glob> | !fg unblock user <mxid|glob>")
+    @guard.subcommand("unblock", help="Remove a block entry: !guard unblock server <glob> | !guard unblock user <mxid|glob>")
     @command.argument("what")
     @command.argument("pattern")
     async def unblock(self, evt: MessageEvent, what: str, pattern: str) -> None:
@@ -407,9 +407,9 @@ class FamilyGuardBot(Plugin):
         elif (verb, what) in REMOVE_KINDS:
             await self.remove(evt, REMOVE_KINDS[(verb, what)], pattern)
         else:
-            await evt.reply(f"Usage: !fg {verb} server|user <pattern>")
+            await evt.reply(f"Usage: !guard {verb} server|user <pattern>")
 
-    @fg.subcommand("list", help="List all rules")
+    @guard.subcommand("list", help="List all rules")
     async def list_cmd(self, evt: MessageEvent) -> None:
         if not self.in_control_room(evt):
             return
@@ -443,12 +443,12 @@ class FamilyGuardBot(Plugin):
             lines.append("")
             lines.append(
                 "_Static homeserver.yaml rules also apply but are not shown: the module "
-                "has not published `family_guard.effective_rules` here (check that "
+                "has not published `guardian.effective_rules` here (check that "
                 "`notify_user` may send that state event)._"
             )
         await evt.reply("\n".join(lines))
 
-    @fg.subcommand("check", help="Would this user be allowed to interact with the kids? !fg check @x:server")
+    @guard.subcommand("check", help="Would this user be allowed to interact with the kids? !guard check @x:server")
     @command.argument("mxid")
     async def check(self, evt: MessageEvent, mxid: str) -> None:
         if not self.in_control_room(evt):

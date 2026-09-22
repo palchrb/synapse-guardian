@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reject pending invites for protected users.
 
-family_guard trusts `is_invited` joins, so invites that arrived before the
+guardian trusts `is_invited` joins, so invites that arrived before the
 module was enabled (or while `dry_run: true`) would still be joinable. Run this
 once after enabling the module to clean them up.
 
@@ -55,9 +55,9 @@ def users_from_config(path: str) -> list[str]:
     with open(path) as f:
         cfg = yaml.safe_load(f)
     for module in cfg.get("modules", []):
-        if str(module.get("module", "")).startswith("family_guard"):
+        if str(module.get("module", "")).startswith("synapse_guardian"):
             return list((module.get("config") or {}).get("protected_users") or [])
-    raise SystemExit("no family_guard module found in config")
+    raise SystemExit("no guardian module found in config")
 
 
 def main() -> int:

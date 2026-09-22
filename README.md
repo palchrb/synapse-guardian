@@ -1,4 +1,4 @@
-# family_guard
+# guardian
 
 A [Synapse](https://github.com/element-hq/synapse) module that restricts which
 homeservers and users a set of *protected* local accounts (typically your
@@ -36,12 +36,53 @@ allows every `*.skole.no` server except `evil.skole.no`, and
 case-insensitive. Catch-all patterns are refused in allow lists — not just
 `*`, but anything that matches every user or server (`@*:*`, `*.*`, `?*`).
 
+## Upgrading from family_guard 0.3.x
+
+Everything was renamed in 0.4.0: the pip package, the Python module, the state
+event types, the maubot plugin and the bot's command prefix. Nothing migrates
+itself, so do all of the following in one sitting.
+
+1. **Remove the old package first**, or both will sit in the virtualenv:
+
+   ```sh
+   /opt/venvs/matrix-synapse/bin/pip uninstall -y family-guard
+   /opt/venvs/matrix-synapse/bin/pip install --force-reinstall --no-deps \
+     "git+https://github.com/<you>/synapse-guardian.git"
+   ```
+
+2. **Point `homeserver.yaml` at the new class** — `family_guard.FamilyGuard`
+   becomes `synapse_guardian.Guardian`. Every config key is unchanged.
+
+3. **Rename the entries in the control room's `m.room.power_levels`**, under
+   `events`: `family_guard.protected_user` → `guardian.protected_user`, and the
+   same for `allowed_server`, `allowed_user`, `blocked_user`, `blocked_server`
+   and `effective_rules`. Miss this and the bot refuses to write rules and the
+   module logs one warning about `guardian.effective_rules`.
+
+4. **Replace the maubot plugin.** The id changed from `no.vibb.family_guard` to
+   `no.vibb.guardian`, so maubot treats it as a new plugin: delete the old
+   instance and plugin, `make bot-build`, upload the new `.mbp` and re-create
+   the instance with the same config.
+
+5. **Re-create any rules that live in the control room.** The new version only
+   reads `guardian.*` state events, so old `family_guard.*` ones are ignored —
+   run `!guard list` (note the new prefix), and add each rule again with
+   `!guard protect` / `!guard allow` / `!guard block`. Rules that live in
+   `homeserver.yaml` need no action. The stale `family_guard.*` state events are
+   inert and can be left alone, or blanked out by sending `{}` as their content
+   if you want the room tidy.
+
+6. **Restart Synapse** and check the log says `guardian: loaded (...)`.
+
+Prometheus series change too: the `block_name` label is now
+`synapse_guardian.module.Guardian.*`.
+
 ## Installation
 
 Into the Python environment Synapse runs in:
 
 ```sh
-pip install git+https://github.com/<you>/family-guard.git   # or: pip install .
+pip install git+https://github.com/<you>/synapse-guardian.git   # or: pip install .
 ```
 
 Debian packages from packages.matrix.org: use `/opt/venvs/matrix-synapse/bin/pip`. Docker: build an overlay
@@ -49,14 +90,14 @@ image:
 
 ```Dockerfile
 FROM matrixdotorg/synapse
-RUN pip install git+https://github.com/<you>/family-guard.git
+RUN pip install git+https://github.com/<you>/synapse-guardian.git
 ```
 
 ## Configuration (`homeserver.yaml`)
 
 ```yaml
 modules:
-  - module: family_guard.FamilyGuard
+  - module: synapse_guardian.Guardian
     config:
       control_room: "!abc123:example.org"    # optional; rules managed in this room
       # Static baseline. Always applies; cannot be removed from the room.
@@ -67,7 +108,7 @@ modules:
       blocked_servers: []
       uninvited_joins: known_rooms           # deny | known_rooms (default)
       notify_room: false                     # post a notice on every block
-      notify_user: "@family-guard-bot:example.org"  # required with notify_room
+      notify_user: "@guardianbot:example.org"  # required with notify_room
       notify_dedupe_s: 300
       trusted_senders: []                    # extra local users whose room entries count
       refresh_interval_s: 15                 # max seconds before a rule change is picked up
@@ -97,7 +138,7 @@ modules:
   on every worker, to watch one small room. With it off the module's only
   recurring work is one `get_room_state` of the control room per
   `refresh_interval_s` per worker, which is negligible. Turn it on only on a
-  quiet server where a 15-second delay on `!fg` commands would actually bother
+  quiet server where a 15-second delay on `!guard` commands would actually bother
   you. It is never registered when `control_room` is unset.
 - `strict_local_events` (default `false`): the only thing left that this adds
   is stopping a protected user **knocking** on a local room. Opening up a room
@@ -141,7 +182,7 @@ the module in a worker deployment.**
 - **Rule changes propagate fast.** `on_new_event` is dispatched both by the
   persister (`notifier.py:413` via `handlers/message.py:2211`) *and* by every
   worker that receives the events replication stream
-  (`replication/tcp/client.py:222`), so with `watch_control_room: true` a `!fg`
+  (`replication/tcp/client.py:222`), so with `watch_control_room: true` a `!guard`
   command takes effect on all workers within replication latency. With it off
   (the default), worst case is `refresh_interval_s` (default 15 s) per worker.
 - **`notify_room` works on any worker.** `create_and_send_event_into_room` goes
@@ -164,16 +205,16 @@ the module in a worker deployment.**
 
    ```json
    "events": {
-     "family_guard.protected_user": 50,
-     "family_guard.allowed_server": 50,
-     "family_guard.allowed_user": 50,
-     "family_guard.blocked_user": 50,
-     "family_guard.blocked_server": 50,
-     "family_guard.effective_rules": 50
+     "guardian.protected_user": 50,
+     "guardian.allowed_server": 50,
+     "guardian.allowed_user": 50,
+     "guardian.blocked_user": 50,
+     "guardian.blocked_server": 50,
+     "guardian.effective_rules": 50
    }
    ```
 
-   `family_guard.effective_rules` is written by the **module** as `notify_user`
+   `guardian.effective_rules` is written by the **module** as `notify_user`
    (see below), not by you; without it the bot cannot show static rules.
 3. Invite the bot account and have it join. Disable auto-join on the maubot
    client (Manage clients → Autojoin off) so it can never be lured elsewhere.
@@ -185,16 +226,16 @@ Rules are state events, one per entry. Empty content means "removed":
 
 | type                          | state_key                      | content                                           |
 |-------------------------------|--------------------------------|---------------------------------------------------|
-| `family_guard.protected_user` | `kid:example.org` (no `@`)     | `{"entity": "@kid:example.org", "added_by", "ts", "reason"?}` |
-| `family_guard.allowed_server` | `friends.org` / `*.skole.no`   | `{"entity": "friends.org", ...}`                  |
-| `family_guard.allowed_user`   | `granny:other.org`             | `{"entity": "@granny:other.org", ...}`            |
-| `family_guard.blocked_user`   | `troll:friends.org`            | `{"entity": "@troll:friends.org", ...}`           |
-| `family_guard.blocked_server` | `evil.skole.no`                | `{"entity": "evil.skole.no", ...}`                |
+| `guardian.protected_user` | `kid:example.org` (no `@`)     | `{"entity": "@kid:example.org", "added_by", "ts", "reason"?}` |
+| `guardian.allowed_server` | `friends.org` / `*.skole.no`   | `{"entity": "friends.org", ...}`                  |
+| `guardian.allowed_user`   | `granny:other.org`             | `{"entity": "@granny:other.org", ...}`            |
+| `guardian.blocked_user`   | `troll:friends.org`            | `{"entity": "@troll:friends.org", ...}`           |
+| `guardian.blocked_server` | `evil.skole.no`                | `{"entity": "evil.skole.no", ...}`                |
 
 ### What the module publishes back
 
 When `control_room` and `notify_user` are both set, the module keeps one extra
-state event in the room, `family_guard.effective_rules` (state key `""`), sent
+state event in the room, `guardian.effective_rules` (state key `""`), sent
 as `notify_user`:
 
 ```json
@@ -208,7 +249,7 @@ as `notify_user`:
 ```
 
 The bot is an ordinary Matrix client and cannot read `homeserver.yaml`, so this
-is how `!fg list` shows the static baseline and how `!fg check` answers with
+is how `!guard list` shows the static baseline and how `!guard check` answers with
 the rules actually in force. It is rewritten only when the content changes, and
 a restart re-reads it first rather than rewriting an identical event. If
 `notify_user` lacks power to send it, the module logs one warning and carries
@@ -217,7 +258,7 @@ on — enforcement is unaffected, and the bot falls back to room rules only.
 The entity is read from `content.entity` (falling back to the state key,
 which only works for server entries since user IDs need the `@`). State keys
 cannot start with `@` unless the sender *is* that user, hence the stripped
-form. `!fg remove`/`unblock`/`unprotect` clear every entry whose entity
+form. `!guard remove`/`unblock`/`unprotect` clear every entry whose entity
 matches, whatever its state key. Changes take effect immediately on a monolith (the module
 listens for new events) and within `refresh_interval_s` on other workers.
 If the room becomes unreadable, the module keeps the last known rules.
@@ -225,29 +266,29 @@ If the room becomes unreadable, the module keeps the last known rules.
 ## The bot
 
 ```
-!fg protect @kid:example.org [reason]     !fg unprotect @kid:example.org
-!fg allow server <glob> [reason]          !fg remove server <glob>
-!fg allow user <mxid|glob> [reason]       !fg remove user <mxid|glob>
-!fg block user <mxid|glob> [reason]       !fg unblock user <mxid|glob>
-!fg block server <glob> [reason]          !fg unblock server <glob>
-!fg list                                  # grouped, with who/when/why, plus static rules
-!fg check @someone:server.org             # evaluate with the same rule code
+!guard protect @kid:example.org [reason]     !guard unprotect @kid:example.org
+!guard allow server <glob> [reason]          !guard remove server <glob>
+!guard allow user <mxid|glob> [reason]       !guard remove user <mxid|glob>
+!guard block user <mxid|glob> [reason]       !guard unblock user <mxid|glob>
+!guard block server <glob> [reason]          !guard unblock server <glob>
+!guard list                                  # grouped, with who/when/why, plus static rules
+!guard check @someone:server.org             # evaluate with the same rule code
 ```
 
 Hardening, so the bot can never be abused to grant rights:
 
 - `control_room` is required in the plugin config; commands anywhere else are
-  ignored without a reply. (maubot itself still answers a bare `!fg` with
+  ignored without a reply. (maubot itself still answers a bare `!guard` with
   usage text in any room the bot is in — another reason to keep autojoin off.)
 - Before any change the bot reads `m.room.power_levels` and refuses unless
   the sender could send that state event type themselves.
 - Optional `admins: [...]` in the plugin config restricts further.
 - Only local users can be protected; the bot refuses to protect the sender
   themselves and reminds you that Synapse admins bypass the checks.
-- Every entry records `added_by` and `ts`; `!fg list` shows them.
+- Every entry records `added_by` and `ts`; `!guard list` shows them.
 - Catch-all globs in allow lists are refused (same validation as the module).
 
-Build: `make bot-build` copies `family_guard/policy.py` into the plugin
+Build: `make bot-build` copies `synapse_guardian/policy.py` into the plugin
 (maubot plugins are self-contained zips) and runs `mbc build` if available;
 otherwise run `mbc build` in `bot/` yourself and upload the `.mbp`.
 
@@ -294,7 +335,7 @@ leaves them, then logs the temporary token out.
 - Set `m.room.server_acl` on rooms protected users create.
 - `notify_via: bot` — deliver notices through a webhook to the maubot plugin so
   they can be encrypted/richer. The module already routes notices through a
-  small `Notifier` interface (`family_guard/notify.py`) for this.
+  small `Notifier` interface (`synapse_guardian/notify.py`) for this.
 - Per-child rule overrides.
 
 ## Development
@@ -310,6 +351,6 @@ make lint
 Synapse module callback relevant here: what each one costs, whether it fires for
 local or federated events, which ones server admins bypass, and why we use or
 avoid each. The upstream docs cover none of that. It is pinned by
-`family_guard_tests/test_synapse_contract.py` — **after upgrading Synapse, run
+`guardian_tests/test_synapse_contract.py` — **after upgrading Synapse, run
 `make test-unit`**, which fails with an actionable message if an assumption in
 that document stopped holding.

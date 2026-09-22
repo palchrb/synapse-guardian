@@ -14,7 +14,7 @@ So: every claim below is read from the Synapse source, cited `file:line`.
 
 **Verified against Synapse 1.161.0.** Line numbers refer to that version, as
 installed in `.venv/lib/python3.11/site-packages/synapse/`. After a Synapse
-upgrade, run `make test-unit` — `family_guard_tests/test_synapse_contract.py`
+upgrade, run `make test-unit` — `guardian_tests/test_synapse_contract.py`
 fails loudly if any assumption here stopped holding, and its failure messages
 point back at this file.
 
@@ -101,7 +101,7 @@ with Measure(
 
 (`spamchecker_callbacks.py:453-457`, and 13 more occurrences — 14 in total.)
 Our callbacks therefore appear as `block_name` values like
-`family_guard.module.FamilyGuard.user_may_invite`, feeding the counters defined
+`synapse_guardian.module.Guardian.user_may_invite`, feeding the counters defined
 in `util/metrics.py:55-105`: `synapse_util_metrics_block_count`,
 `_block_time_seconds`, `_block_db_txn_count`,
 `_block_db_txn_duration_seconds`, `_block_ru_utime_seconds`. All are labelled
@@ -112,21 +112,21 @@ Ready-to-paste PromQL:
 ```promql
 # calls/sec per callback
 sum by (block_name) (
-  rate(synapse_util_metrics_block_count{block_name=~"family_guard.*"}[5m])
+  rate(synapse_util_metrics_block_count{block_name=~"synapse_guardian.module.Guardian.*"}[5m])
 )
 
 # seconds spent per call (latency we add to an invite/join)
-sum by (block_name) (rate(synapse_util_metrics_block_time_seconds{block_name=~"family_guard.*"}[5m]))
+sum by (block_name) (rate(synapse_util_metrics_block_time_seconds{block_name=~"synapse_guardian.module.Guardian.*"}[5m]))
   /
-sum by (block_name) (rate(synapse_util_metrics_block_count{block_name=~"family_guard.*"}[5m]))
+sum by (block_name) (rate(synapse_util_metrics_block_count{block_name=~"synapse_guardian.module.Guardian.*"}[5m]))
 
 # database transactions per call -- should sit at 0 in steady state
-sum by (block_name) (rate(synapse_util_metrics_block_db_txn_count{block_name=~"family_guard.*"}[5m]))
+sum by (block_name) (rate(synapse_util_metrics_block_db_txn_count{block_name=~"synapse_guardian.module.Guardian.*"}[5m]))
   /
-sum by (block_name) (rate(synapse_util_metrics_block_count{block_name=~"family_guard.*"}[5m]))
+sum by (block_name) (rate(synapse_util_metrics_block_count{block_name=~"synapse_guardian.module.Guardian.*"}[5m]))
 
 # user CPU seconds per second attributable to the module
-sum(rate(synapse_util_metrics_block_ru_utime_seconds{block_name=~"family_guard.*"}[5m]))
+sum(rate(synapse_util_metrics_block_ru_utime_seconds{block_name=~"synapse_guardian.module.Guardian.*"}[5m]))
 ```
 
 ### Two blind spots
@@ -135,7 +135,7 @@ sum(rate(synapse_util_metrics_block_ru_utime_seconds{block_name=~"family_guard.*
 **0 times** in `third_party_event_rules_callbacks.py`. So `check_event_allowed`
 and `on_new_event` — the two most expensive things a module can register —
 produce no `block_name` series whatsoever. Turning on `strict_local_events`
-will not show up in any `family_guard.*` metric.
+will not show up in any `synapse_guardian.module.Guardian.*` metric.
 
 **(b) The expensive part happens before the measurement.** For
 `check_event_allowed`, Synapse loads the room's previous state
@@ -152,7 +152,7 @@ that sends events.
 problem.** Reading the dispatcher does. Both regressions this module has had
 were found by reading `third_party_event_rules_callbacks.py`, and neither would
 have appeared on a dashboard. The machine-checkable half of the claim is pinned
-by `CallbackCostTestCase` in `family_guard_tests/test_module.py`, which asserts
+by `CallbackCostTestCase` in `guardian_tests/test_module.py`, which asserts
 a per-callback database-transaction budget of zero and that no
 third-party-rules callback is registered under default config.
 

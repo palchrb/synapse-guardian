@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from family_guard.policy import (
+from synapse_guardian.policy import (
     ALL_KINDS,
     PLURAL,
     InvalidPattern,
@@ -51,7 +51,7 @@ def _number(cfg: dict[str, Any], key: str, default: float) -> float:
 
 
 @dataclass(frozen=True)
-class FamilyGuardConfig:
+class GuardianConfig:
     static_rules: RuleSet
     control_room: str | None = None
     uninvited_joins: str = "known_rooms"
@@ -65,7 +65,7 @@ class FamilyGuardConfig:
     dry_run: bool = False
 
     @classmethod
-    def parse(cls, cfg: dict[str, Any] | None) -> "FamilyGuardConfig":
+    def parse(cls, cfg: dict[str, Any] | None) -> "GuardianConfig":
         cfg = cfg or {}
         if not isinstance(cfg, dict):
             raise ConfigError("module config must be a mapping")

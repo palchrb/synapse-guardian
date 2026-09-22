@@ -21,22 +21,22 @@ synapse-tests:
 # Collect the whole directory (minus the trial-only suite) so a new test file
 # is never silently left out of `make test`.
 test-unit:
-	$(PYTEST) family_guard_tests --ignore=family_guard_tests/test_module.py
+	$(PYTEST) guardian_tests --ignore=guardian_tests/test_module.py
 
 test-module: synapse-tests
-	PYTHONPATH=$(SYNAPSE_TESTS_DIR) $(PY) -m twisted.trial family_guard_tests.test_module
+	PYTHONPATH=$(SYNAPSE_TESTS_DIR) $(PY) -m twisted.trial guardian_tests.test_module
 
 test: test-unit test-module
 
 lint:
-	$(PY) -m pyflakes family_guard family_guard_tests scripts bot/family_guard_bot
-	$(PY) -m compileall -q family_guard family_guard_tests scripts bot/family_guard_bot
+	$(PY) -m pyflakes synapse_guardian guardian_tests scripts bot/guardian_bot
+	$(PY) -m compileall -q synapse_guardian guardian_tests scripts bot/guardian_bot
 
 # maubot plugins are zipped; the bot needs its own copy of policy.py.
 bot-build:
-	cp family_guard/policy.py bot/family_guard_bot/policy.py
+	cp synapse_guardian/policy.py bot/guardian_bot/policy.py
 	@if command -v mbc >/dev/null 2>&1; then cd bot && mbc build; \
-	 else echo "mbc not found: bot/family_guard_bot is ready, run 'mbc build' in bot/ yourself"; fi
+	 else echo "mbc not found: bot/guardian_bot is ready, run 'mbc build' in bot/ yourself"; fi
 
 clean:
 	rm -rf _trial_temp .pytest_cache build dist *.egg-info bot/*.mbp

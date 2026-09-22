@@ -17,12 +17,12 @@ import time
 from collections.abc import Mapping
 from typing import Any, Awaitable, Callable, Protocol
 
-from family_guard.config import FamilyGuardConfig
-from family_guard.policy import ALL_KINDS, RuleSet
+from synapse_guardian.config import GuardianConfig
+from synapse_guardian.policy import ALL_KINDS, RuleSet
 
 logger = logging.getLogger(__name__)
 
-EVENT_TYPE_PREFIX = "family_guard."
+EVENT_TYPE_PREFIX = "guardian."
 EVENT_TYPES: dict[str, str] = {EVENT_TYPE_PREFIX + kind: kind for kind in ALL_KINDS}
 
 
@@ -43,7 +43,7 @@ class PolicyStore:
     def __init__(
         self,
         api: StoreApi,
-        config: FamilyGuardConfig,
+        config: GuardianConfig,
         clock: Callable[[], float] = time.monotonic,
         on_admin_protected: Callable[[str], Awaitable[None]] | None = None,
         on_rules_loaded: Callable[[RuleSet], None] | None = None,
@@ -90,7 +90,7 @@ class PolicyStore:
                 rules = static.merge(room_rules)
             except Exception:
                 logger.exception(
-                    "family_guard: failed to read control room %s; keeping %s rules",
+                    "guardian: failed to read control room %s; keeping %s rules",
                     self.control_room,
                     "previous" if self._rules is not None else "static-only",
                 )
@@ -104,7 +104,7 @@ class PolicyStore:
             try:
                 self._on_rules_loaded(rules)
             except Exception:
-                logger.exception("family_guard: rules-loaded hook failed")
+                logger.exception("guardian: rules-loaded hook failed")
         return rules
 
     async def _read_control_room(self, room_id: str) -> RuleSet:
@@ -125,7 +125,7 @@ class PolicyStore:
                 trust_cache[sender] = await self._is_trusted(sender)
             if not trust_cache[sender]:
                 logger.warning(
-                    "family_guard: ignoring %s %r in %s from untrusted sender %s",
+                    "guardian: ignoring %s %r in %s from untrusted sender %s",
                     kind,
                     state_key,
                     room_id,
@@ -138,14 +138,14 @@ class PolicyStore:
             entity = content.get("entity", state_key)
             if not isinstance(entity, str):
                 logger.warning(
-                    "family_guard: ignoring %s %r in %s: entity is not a string", kind, state_key, room_id
+                    "guardian: ignoring %s %r in %s: entity is not a string", kind, state_key, room_id
                 )
                 continue
             entries.append((kind, entity))
 
         def on_invalid(kind: str, pattern: str, error: str) -> None:
             logger.warning(
-                "family_guard: ignoring invalid %s %r in %s: %s", kind, pattern, room_id, error
+                "guardian: ignoring invalid %s %r in %s: %s", kind, pattern, room_id, error
             )
 
         return RuleSet.build(entries, on_invalid=on_invalid)
@@ -158,7 +158,7 @@ class PolicyStore:
         try:
             return bool(await self._api.is_user_admin(sender))
         except Exception:
-            logger.exception("family_guard: could not check admin status of %s", sender)
+            logger.exception("guardian: could not check admin status of %s", sender)
             return False
 
     async def _check_admins(self, rules: RuleSet) -> None:
@@ -167,7 +167,7 @@ class PolicyStore:
             try:
                 is_admin = await self._api.is_user_admin(user_id)
             except Exception:
-                logger.exception("family_guard: could not check admin status of %s", user_id)
+                logger.exception("guardian: could not check admin status of %s", user_id)
                 continue
             if not is_admin:
                 self._warned_admins.discard(user_id)
@@ -176,7 +176,7 @@ class PolicyStore:
                 continue
             self._warned_admins.add(user_id)
             logger.error(
-                "family_guard: protected user %s is a server admin; Synapse skips "
+                "guardian: protected user %s is a server admin; Synapse skips "
                 "invite/join checks for admins, so this user is NOT protected",
                 user_id,
             )
@@ -184,4 +184,4 @@ class PolicyStore:
                 try:
                     await self._on_admin_protected(user_id)
                 except Exception:
-                    logger.exception("family_guard: admin-protected notification failed")
+                    logger.exception("guardian: admin-protected notification failed")

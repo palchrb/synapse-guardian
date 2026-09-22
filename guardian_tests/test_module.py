@@ -1,6 +1,6 @@
 """End-to-end tests against a real (in-memory) Synapse 1.161 via HomeserverTestCase.
 
-Run with:  PYTHONPATH=.synapse-tests python -m twisted.trial family_guard_tests.test_module
+Run with:  PYTHONPATH=.synapse-tests python -m twisted.trial guardian_tests.test_module
 """
 
 from __future__ import annotations
@@ -23,15 +23,15 @@ from synapse.util.clock import Clock
 from tests import unittest
 from tests.test_utils.event_builders import make_test_event, make_test_pdu_event
 
-from family_guard.config import ConfigError
-from family_guard.module import FamilyGuard
+from synapse_guardian.config import ConfigError
+from synapse_guardian.module import Guardian
 
 SERVER = "test"
 KID = "@kid:test"
 PLACEHOLDER_ROOM = "!placeholder:test"
 
 
-class FamilyGuardTestCase(unittest.HomeserverTestCase):
+class GuardianTestCase(unittest.HomeserverTestCase):
     servlets = [
         admin.register_servlets,
         login.register_servlets,
@@ -58,7 +58,7 @@ class FamilyGuardTestCase(unittest.HomeserverTestCase):
     def default_config(self) -> JsonDict:
         config = super().default_config()
         config["modules"] = [
-            {"module": "family_guard.FamilyGuard", "config": self.module_config()}
+            {"module": "synapse_guardian.Guardian", "config": self.module_config()}
         ]
         return config
 
@@ -89,12 +89,12 @@ class FamilyGuardTestCase(unittest.HomeserverTestCase):
             self.module._publisher._room_id = self.control_room  # type: ignore[attr-defined]
 
     @staticmethod
-    def _find_module(hs: HomeServer) -> FamilyGuard:
+    def _find_module(hs: HomeServer) -> Guardian:
         callbacks = hs.get_module_api_callbacks().spam_checker._user_may_invite_callbacks
         for cb in callbacks:
-            if isinstance(getattr(cb, "__self__", None), FamilyGuard):
+            if isinstance(getattr(cb, "__self__", None), Guardian):
                 return cb.__self__
-        raise AssertionError("family_guard module not loaded")
+        raise AssertionError("guardian module not loaded")
 
     # --- helpers ------------------------------------------------------------
 
@@ -154,7 +154,7 @@ class FamilyGuardTestCase(unittest.HomeserverTestCase):
         ]
 
     def published(self) -> list[dict]:
-        """Every family_guard.effective_rules event in the control room timeline."""
+        """Every guardian.effective_rules event in the control room timeline."""
         channel = self.make_request(
             "GET",
             f"/rooms/{self.control_room}/messages?dir=b&limit=100",
@@ -163,7 +163,7 @@ class FamilyGuardTestCase(unittest.HomeserverTestCase):
         self.assertEqual(channel.code, 200, channel.json_body)
         return [
             ev for ev in channel.json_body["chunk"]
-            if ev["type"] == "family_guard.effective_rules"
+            if ev["type"] == "guardian.effective_rules"
         ]
 
     def grant_bot_state_power(self) -> None:
@@ -177,7 +177,7 @@ class FamilyGuardTestCase(unittest.HomeserverTestCase):
         content = dict(channel.json_body)
         content.setdefault("users", {})[self.bot] = 50
         events = dict(content.get("events") or {})
-        events["family_guard.effective_rules"] = 50
+        events["guardian.effective_rules"] = 50
         content["events"] = events
         self.helper.send_state(
             self.control_room, "m.room.power_levels", content, tok=self.parent_tok
@@ -220,7 +220,7 @@ class FamilyGuardTestCase(unittest.HomeserverTestCase):
         # state keys may not start with "@" (auth rules) -> strip it, entity lives in content
         self.helper.send_state(
             self.control_room,
-            f"family_guard.{kind}",
+            f"guardian.{kind}",
             {"entity": entity, "added_by": self.parent} if content is None else content,
             tok=tok or self.parent_tok,
             state_key=entity[1:] if entity.startswith("@") else entity,
@@ -229,7 +229,7 @@ class FamilyGuardTestCase(unittest.HomeserverTestCase):
         self.pump()
 
 
-class InvitesToKidTestCase(FamilyGuardTestCase):
+class InvitesToKidTestCase(GuardianTestCase):
     def test_federated_invite_from_allowed_server_ok(self) -> None:
         event = self.get_success(self.federated_invite("@friend:friends.org"))
         self.assertEqual(event.state_key, KID)
@@ -290,7 +290,7 @@ class InvitesToKidTestCase(FamilyGuardTestCase):
         self.helper.invite(room_id, self.sibling, self.bot, tok=self.sibling_tok)
 
 
-class InvitesFromKidTestCase(FamilyGuardTestCase):
+class InvitesFromKidTestCase(GuardianTestCase):
     def test_kid_invite_remote_blocked_403(self) -> None:
         self.mock_remote_profiles()
         room_id = self.helper.create_room_as(self.kid, is_public=False, tok=self.kid_tok)
@@ -333,7 +333,7 @@ class InvitesFromKidTestCase(FamilyGuardTestCase):
         make_invite.assert_called_once()
 
 
-class JoinsTestCase(FamilyGuardTestCase):
+class JoinsTestCase(GuardianTestCase):
     CONFIG_OVERRIDES = {"strict_local_events": True}
 
     def test_kid_join_with_invite_ok(self) -> None:
@@ -412,7 +412,7 @@ class JoinsTestCase(FamilyGuardTestCase):
         self.assertEqual(channel.code, 200, channel.json_body)
 
 
-class KnocksTestCase(FamilyGuardTestCase):
+class KnocksTestCase(GuardianTestCase):
     CONFIG_OVERRIDES = {"strict_local_events": True}
 
     def knock_room(self) -> str:
@@ -453,7 +453,7 @@ class KnocksTestCase(FamilyGuardTestCase):
         self.assertEqual(res, (False, None))
 
 
-class DenyJoinPolicyTestCase(FamilyGuardTestCase):
+class DenyJoinPolicyTestCase(GuardianTestCase):
     CONFIG_OVERRIDES = {"uninvited_joins": "deny"}
 
     def test_kid_join_uninvited_deny_policy_403(self) -> None:
@@ -466,7 +466,7 @@ class DenyJoinPolicyTestCase(FamilyGuardTestCase):
         self.helper.join(room_id, self.kid, tok=self.kid_tok)
 
 
-class EmptyRoomEscapeTestCase(FamilyGuardTestCase):
+class EmptyRoomEscapeTestCase(GuardianTestCase):
     """The kid makes an empty room of their own, then tries to get out of it."""
 
     def setUp(self) -> None:
@@ -537,11 +537,11 @@ class EmptyRoomEscapeTestCase(FamilyGuardTestCase):
         self.assertEqual(state["join_rule"], JoinRules.INVITE)
 
 
-class PublishEffectiveRulesTestCase(FamilyGuardTestCase):
+class PublishEffectiveRulesTestCase(GuardianTestCase):
     """The module tells the control room what it actually loaded.
 
     The bot is a plain Matrix client and cannot read homeserver.yaml, so
-    without this `!fg list` and `!fg check` are blind to the static baseline.
+    without this `!guard list` and `!guard check` are blind to the static baseline.
     """
 
     def test_publishes_static_and_effective_rules(self) -> None:
@@ -583,7 +583,7 @@ class PublishEffectiveRulesTestCase(FamilyGuardTestCase):
         self.assertEqual(len(self.published()), 1)
         # A fresh publisher, as after a Synapse restart: it must prime itself
         # from the room instead of writing the same content again.
-        from family_guard.publish import RoomPublisher
+        from synapse_guardian.publish import RoomPublisher
 
         self.module._publisher = RoomPublisher(
             self.module._api, self.control_room, self.bot
@@ -597,34 +597,34 @@ class PublishEffectiveRulesTestCase(FamilyGuardTestCase):
         self.force_refresh()
         self.assertFalse(self.module._store._stale)
         self.assertFalse(
-            self.module._store.is_our_event_type("family_guard.effective_rules")
+            self.module._store.is_our_event_type("guardian.effective_rules")
         )
 
     def test_missing_power_is_logged_once_and_blocking_still_works(self) -> None:
         # No grant_bot_state_power(): the bot cannot send the state event.
         # Room setup already warned through this publisher, so start a fresh one
         # to see the warn-once behaviour from the beginning.
-        from family_guard.publish import RoomPublisher
+        from synapse_guardian.publish import RoomPublisher
 
         self.module._publisher = RoomPublisher(
             self.module._api, self.control_room, self.bot
         )
-        with self.assertLogs("family_guard.publish", level="WARNING") as logs:
+        with self.assertLogs("synapse_guardian.publish", level="WARNING") as logs:
             self.force_refresh()
             self.force_refresh()
         self.assertEqual(len(self.published()), 0)
         warnings = [r for r in logs.records if r.levelname == "WARNING"]
         self.assertEqual(len(warnings), 1, [r.getMessage() for r in warnings])
-        self.assertIn("family_guard.effective_rules", warnings[0].getMessage())
+        self.assertIn("guardian.effective_rules", warnings[0].getMessage())
         self.assert_federated_invite_blocked("@stranger:stranger.org", room_id="!a:stranger.org")
 
 
-class WarmUpTestCase(FamilyGuardTestCase):
+class WarmUpTestCase(GuardianTestCase):
     """Rules must load without waiting for the first invite or join.
 
     Regression: the store loads lazily from callbacks, so a server with no
     traffic after a restart never loaded -- and so never published
-    `family_guard.effective_rules`, leaving the bot unable to show static rules.
+    `guardian.effective_rules`, leaving the bot unable to show static rules.
     """
 
     def test_rules_are_loaded_without_any_traffic(self) -> None:
@@ -644,10 +644,10 @@ class WarmUpTestCase(FamilyGuardTestCase):
         state = self.get_success(
             self.hs.get_storage_controllers().state.get_current_state(self.control_room)
         )
-        self.assertIn(("family_guard.effective_rules", ""), state)
+        self.assertIn(("guardian.effective_rules", ""), state)
 
 
-class NoPublishTestCase(FamilyGuardTestCase):
+class NoPublishTestCase(GuardianTestCase):
     """Without somewhere to write, or someone to write as, we publish nothing."""
 
     CONFIG_OVERRIDES = {"notify_user": None}
@@ -659,7 +659,7 @@ class NoPublishTestCase(FamilyGuardTestCase):
         self.assertEqual(len(self.published()), 0)
 
 
-class ControlRoomTestCase(FamilyGuardTestCase):
+class ControlRoomTestCase(GuardianTestCase):
     """Rules managed from the control room, with immediate invalidation on.
 
     `watch_control_room` is off by default because registering `on_new_event`
@@ -739,23 +739,23 @@ class ControlRoomTestCase(FamilyGuardTestCase):
         self.get_success(self.federated_invite("@a:new.org", room_id="!b:new.org"))
 
 
-class AdminProtectedTestCase(FamilyGuardTestCase):
+class AdminProtectedTestCase(GuardianTestCase):
     CONFIG_OVERRIDES = {"protected_users": [KID, "@parent:test"], "notify_room": True}
 
     def test_admin_protected_user_logged_and_notified(self) -> None:
         self.module._store._warned_admins.clear()  # already warned once during prepare()
-        with self.assertLogs("family_guard.store", level="ERROR") as logs:
+        with self.assertLogs("synapse_guardian.store", level="ERROR") as logs:
             self.get_success(self.module._store.refresh())
         self.assertTrue(any("@parent:test" in line and "server admin" in line for line in logs.output))
         self.pump()
         self.assertTrue(any("@parent:test" in n and "WARNING" in n for n in self.notices()))
 
 
-class DryRunTestCase(FamilyGuardTestCase):
+class DryRunTestCase(GuardianTestCase):
     CONFIG_OVERRIDES = {"dry_run": True, "notify_room": True, "strict_local_events": True}
 
     def test_dry_run_allows_and_logs(self) -> None:
-        with self.assertLogs("family_guard.module", level="INFO") as logs:
+        with self.assertLogs("synapse_guardian.module", level="INFO") as logs:
             self.get_success(self.federated_invite("@stranger:stranger.org", room_id="!a:stranger.org"))
         self.assertTrue(any("[dry-run] would block invite" in line for line in logs.output))
         self.pump()
@@ -774,7 +774,7 @@ class DryRunTestCase(FamilyGuardTestCase):
         self.helper.knock(room_id, self.kid, tok=self.kid_tok)
 
 
-class NotifyTestCase(FamilyGuardTestCase):
+class NotifyTestCase(GuardianTestCase):
     CONFIG_OVERRIDES = {"notify_room": True, "notify_dedupe_s": 300}
 
     def prepare(self, reactor: MemoryReactor, clock: Clock, hs: HomeServer) -> None:
@@ -812,7 +812,7 @@ class NotifyTestCase(FamilyGuardTestCase):
 
     def test_notify_failure_does_not_change_decision(self) -> None:
         self.helper.leave(self.control_room, self.bot, tok=self.bot_tok)
-        with self.assertLogs("family_guard.notify", level="ERROR"):
+        with self.assertLogs("synapse_guardian.notify", level="ERROR"):
             self.assert_federated_invite_blocked("@stranger:stranger.org", room_id="!a:stranger.org")
             self.pump()
         self.assertEqual(self.notices(), [])
@@ -830,20 +830,20 @@ class NotifyTestCase(FamilyGuardTestCase):
 class ConfigTestCase(unittest.TestCase):
     def test_parse_config_rejects_bad_values(self) -> None:
         with self.assertRaises(ConfigError):
-            FamilyGuard.parse_config({"uninvited_joins": "sometimes"})
+            Guardian.parse_config({"uninvited_joins": "sometimes"})
         with self.assertRaises(ConfigError):
-            FamilyGuard.parse_config({"allowed_servers": ["*"]})
+            Guardian.parse_config({"allowed_servers": ["*"]})
         with self.assertRaises(ConfigError):
-            FamilyGuard.parse_config({"control_room": "#not-an-id:test"})
+            Guardian.parse_config({"control_room": "#not-an-id:test"})
         with self.assertRaises(ConfigError):
-            FamilyGuard.parse_config({"notify_room": True})
+            Guardian.parse_config({"notify_room": True})
 
     def test_parse_config_ok(self) -> None:
-        cfg = FamilyGuard.parse_config({"protected_users": [KID], "allowed_servers": ["test"]})
+        cfg = Guardian.parse_config({"protected_users": [KID], "allowed_servers": ["test"]})
         self.assertTrue(cfg.static_rules.is_protected(KID))
 
 
-class StrictLocalEventsTestCase(FamilyGuardTestCase):
+class StrictLocalEventsTestCase(GuardianTestCase):
     CONFIG_OVERRIDES = {"strict_local_events": True}
 
     def test_check_event_allowed_registered_when_enabled(self) -> None:
@@ -853,7 +853,7 @@ class StrictLocalEventsTestCase(FamilyGuardTestCase):
         )
 
 
-class WatchControlRoomTestCase(FamilyGuardTestCase):
+class WatchControlRoomTestCase(GuardianTestCase):
     """`on_new_event` is costly server-wide, so it is opt-in."""
 
     CONFIG_OVERRIDES = {"watch_control_room": True}
@@ -864,7 +864,7 @@ class WatchControlRoomTestCase(FamilyGuardTestCase):
         self.assertTrue(self.module._watching_control_room)
 
 
-class NoWatchControlRoomTestCase(FamilyGuardTestCase):
+class NoWatchControlRoomTestCase(GuardianTestCase):
     """The default: no third-party-rules callback at all."""
 
     def test_on_new_event_not_registered(self) -> None:
@@ -983,7 +983,7 @@ class NoWatchControlRoomTestCase(FamilyGuardTestCase):
         self.assertEqual(channel.code, 200, channel.result)
 
 
-class ResilienceTestCase(FamilyGuardTestCase):
+class ResilienceTestCase(GuardianTestCase):
     def test_callback_error_fails_closed_for_protected(self) -> None:
         self.module._store.get_rules = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
         self.assert_federated_invite_blocked("@friend:friends.org")
@@ -1002,7 +1002,7 @@ class ResilienceTestCase(FamilyGuardTestCase):
         self.helper.send_state(room_id, EventTypes.Name, {"name": "mine"}, tok=self.kid_tok)
 
 
-class CallbackCostTestCase(FamilyGuardTestCase):
+class CallbackCostTestCase(GuardianTestCase):
     """Pin the database cost of our callbacks.
 
     `docs/callbacks.md` claims the spam-checker callbacks we register add no
@@ -1018,7 +1018,7 @@ class CallbackCostTestCase(FamilyGuardTestCase):
     """
 
     def _block_name(self, method: str) -> str:
-        return f"family_guard.module.FamilyGuard.{method}"
+        return f"synapse_guardian.module.Guardian.{method}"
 
     def _db_txns(self, method: str) -> float:
         from synapse.metrics import SERVER_NAME_LABEL

@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from family_guard.policy import (
+from synapse_guardian.policy import (
     MAX_SUBJECT_LEN,
     KIND_ALLOWED_SERVER,
     KIND_ALLOWED_USER,

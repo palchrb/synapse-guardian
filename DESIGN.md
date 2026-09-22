@@ -1,4 +1,4 @@
-# family_guard — design
+# guardian — design
 
 Synapse module + maubot plugin that restricts which homeservers/users a set of
 "protected" local accounts (children) can federate with. Target: Synapse 1.161,
@@ -47,7 +47,7 @@ Server admins bypass `user_may_invite`/`user_may_join_room` inside Synapse; the
 module adds no bypass of its own. A protected user must never be a server
 admin: at rule load, each protected user is checked with
 `module_api.is_user_admin`; admins are logged at ERROR (and notified if
-`notify_room`) and the bot refuses `!fg protect <admin>`.
+`notify_room`) and the bot refuses `!guard protect <admin>`.
 
 ## Sources of rules
 
@@ -66,11 +66,11 @@ are written with the `@` stripped from the state key:
 
 | type                          | state_key                | content                                              |
 |-------------------------------|--------------------------|------------------------------------------------------|
-| `family_guard.protected_user` | `kid:example.org`        | `{entity: "@kid:example.org", added_by, ts, reason?}` |
-| `family_guard.allowed_server` | `friends.org` / `*.x.no` | `{entity: "friends.org", ...}`                       |
-| `family_guard.allowed_user`   | `granny:other.org`       | `{entity: "@granny:other.org", ...}`                 |
-| `family_guard.blocked_user`   | `troll:friends.org`      | `{entity: "@troll:friends.org", ...}`                |
-| `family_guard.blocked_server` | `bad.x.no`               | `{entity: "bad.x.no", ...}`                          |
+| `guardian.protected_user` | `kid:example.org`        | `{entity: "@kid:example.org", added_by, ts, reason?}` |
+| `guardian.allowed_server` | `friends.org` / `*.x.no` | `{entity: "friends.org", ...}`                       |
+| `guardian.allowed_user`   | `granny:other.org`       | `{entity: "@granny:other.org", ...}`                 |
+| `guardian.blocked_user`   | `troll:friends.org`      | `{entity: "@troll:friends.org", ...}`                |
+| `guardian.blocked_server` | `bad.x.no`               | `{entity: "bad.x.no", ...}`                          |
 
 Only state events whose `sender` is a *local* user are honoured (defence in
 depth beyond power levels). Entries are validated (MXID / server name / glob);
@@ -115,7 +115,7 @@ Verified against Synapse 1.161 source (`synapse/handlers/room_member.py`,
 `synapse/handlers/federation.py`). [`docs/callbacks.md`](docs/callbacks.md)
 holds the full inventory — every callback, its dispatcher cost, admin bypasses,
 and the reasoning for using or avoiding it — pinned by
-`family_guard_tests/test_synapse_contract.py`:
+`guardian_tests/test_synapse_contract.py`:
 
 | callback                       | logic                                                                                                   |
 |--------------------------------|---------------------------------------------------------------------------------------------------------|
@@ -163,12 +163,12 @@ NOT_SPAM / `(True, None)`.
 Caveat for README: server admins bypass `user_may_invite` and
 `user_may_join_room`. A protected account must never be a server admin.
 
-Every block is logged at INFO: `family_guard: blocked <action> <who> -> <whom>
+Every block is logged at INFO: `guardian: blocked <action> <who> -> <whom>
 room=<id> reason=<rule|default-deny>`.
 
 ## Notifications
 
-Notices go through a small `Notifier` interface (`family_guard/notify.py`:
+Notices go through a small `Notifier` interface (`synapse_guardian/notify.py`:
 `notify(kind, actor, target, room_id, rule, dry_run)` + `message(text)`) so a
 webhook transport to the bot (`notify_via: bot`, phase 2) can be dropped in.
 v1 implements `RoomNotifier` and `NullNotifier`.
@@ -191,7 +191,7 @@ unencrypted control room (its state is server-visible anyway).
 
 ```yaml
 modules:
-  - module: family_guard.FamilyGuard
+  - module: synapse_guardian.Guardian
     config:
       control_room: "!abc:example.org"     # optional
       protected_users: []                  # static baseline
@@ -201,7 +201,7 @@ modules:
       blocked_servers: []
       uninvited_joins: known_rooms         # deny | known_rooms
       notify_room: false
-      notify_user: "@family-guard-bot:example.org"   # required if notify_room; must be joined to control_room
+      notify_user: "@guardianbot:example.org"   # required if notify_room; must be joined to control_room
       notify_dedupe_s: 300
       trusted_senders: []                  # extra local senders trusted in control_room (admins + notify_user always)
       refresh_interval_s: 30
@@ -210,23 +210,23 @@ modules:
 
 Config errors → raise in `parse_config` (Synapse refuses to start).
 
-## maubot plugin (`family-guard-bot`)
+## maubot plugin (`guardian-bot`)
 
 Commands, only honoured in `control_room` from users with PL ≥ `state_default`
 (bot checks power levels itself, in addition to the server enforcing them):
 
 ```
-!fg protect <mxid>            !fg unprotect <mxid>
-!fg allow server <glob>       !fg remove server <glob>
-!fg allow user <mxid|glob>    !fg remove user <mxid|glob>
-!fg block user <mxid|glob>    !fg unblock user <mxid|glob>
-!fg block server <glob>       !fg unblock server <glob>
-!fg list                      # grouped, with reason / added_by / date
-!fg check <mxid>              # evaluate with the shared policy code; show deciding rule
+!guard protect <mxid>            !guard unprotect <mxid>
+!guard allow server <glob>       !guard remove server <glob>
+!guard allow user <mxid|glob>    !guard remove user <mxid|glob>
+!guard block user <mxid|glob>    !guard unblock user <mxid|glob>
+!guard block server <glob>       !guard unblock server <glob>
+!guard list                      # grouped, with reason / added_by / date
+!guard check <mxid>              # evaluate with the shared policy code; show deciding rule
 ```
 
 The bot writes/clears state events in the control room. It shares `policy.py`
-with the module (vendored copy via `make bot-build`) so `!fg check` matches
+with the module (vendored copy via `make bot-build`) so `!guard check` matches
 the module bit for bit.
 
 Hardening (the bot never grants a right the sender lacks in the room):
@@ -243,16 +243,16 @@ be off (README).
 synapse-module/
 ├── DESIGN.md
 ├── README.md
-├── pyproject.toml                 # package family_guard (module); extras: [bot]
-├── family_guard/
+├── pyproject.toml                 # package synapse_guardian (module); extras: [bot]
+├── synapse_guardian/
 │   ├── __init__.py
 │   ├── config.py                  # parse/validate module config
 │   ├── policy.py                  # pure rule logic, no Synapse imports
 │   ├── store.py                   # PolicyStore: static + room state, cache, refresh
-│   └── module.py                  # FamilyGuard: registers callbacks
+│   └── module.py                  # Guardian: registers callbacks
 ├── bot/
 │   ├── maubot.yaml
-│   └── family_guard_bot/__init__.py
+│   └── guardian_bot/__init__.py
 ├── scripts/
 │   └── reject_pending_invites.py  # one-off: reject pending invites for protected users
 └── tests/
@@ -264,11 +264,11 @@ synapse-module/
 ## Publishing the effective rules
 
 The maubot plugin is a plain Matrix client: it can read the rule state events
-it wrote, but not `homeserver.yaml`, so `!fg list` and `!fg check` were blind
+it wrote, but not `homeserver.yaml`, so `!guard list` and `!guard check` were blind
 to the static baseline.
 
 When `control_room` and `notify_user` are both set, `RoomPublisher`
-(`family_guard/publish.py`) keeps one `family_guard.effective_rules` state
+(`synapse_guardian/publish.py`) keeps one `guardian.effective_rules` state
 event (state key `""`) in the control room, sent as `notify_user`, with
 `static`, `effective`, `dry_run`, `uninvited_joins` and `updated_ts`.
 `RuleSet.to_payload()`/`from_payload()` are the shared serialisation, so the
@@ -280,7 +280,7 @@ bot rebuilds exactly the rule set the module enforces.
   Synapse's own state-event dedup would never fire; the in-memory comparison is
   what keeps the room quiet. On the first publish after start-up the current
   event is read back first, so a restart does not rewrite identical content.
-- `family_guard.effective_rules` is not one of the five rule kinds, so
+- `guardian.effective_rules` is not one of the five rule kinds, so
   `PolicyStore` ignores it and `on_new_event` cannot turn it into a refresh
   loop (pinned by `test_publishing_does_not_invalidate_the_rule_cache`).
 - A failure (normally `notify_user` lacking power to send the type) is logged
@@ -292,8 +292,8 @@ The `matrix-synapse` wheel does not ship the `tests/` package. `test_module.py`
 uses `tests.unittest.HomeserverTestCase`; `make synapse-tests` does a sparse
 checkout of only `tests/` from tag `v1.161.0` into `.synapse-tests/` (never the
 `synapse/` tree, which would shadow the installed wheel; already gitignored).
-`make test` runs `pytest family_guard_tests/test_policy.py test_store.py` and
-`PYTHONPATH=.synapse-tests python -m twisted.trial family_guard_tests.test_module`.
+`make test` runs `pytest guardian_tests/test_policy.py test_store.py` and
+`PYTHONPATH=.synapse-tests python -m twisted.trial guardian_tests.test_module`.
 
 Harness notes (verified for 1.161): load the module via `default_config()`
 `"modules": [...]` (pattern `tests/handlers/test_password_providers.py`);

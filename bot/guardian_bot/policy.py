@@ -1,7 +1,7 @@
-"""Pure rule logic for family_guard.
+"""Pure rule logic for guardian.
 
 No Synapse imports: this file is shared verbatim with the maubot plugin so
-that `!fg check` and the module agree bit for bit.
+that `!guard check` and the module agree bit for bit.
 
 Evaluation principle: the more specific rule wins; on a tie, block wins.
 

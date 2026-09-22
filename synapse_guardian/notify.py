@@ -35,7 +35,7 @@ def format_block(
     prefix = "[dry-run] would block" if dry_run else "blocked"
     where = f" in {sanitise(room_id)}" if room_id else ""
     return (
-        f"family_guard: {prefix} {sanitise(kind)} {sanitise(actor)} -> "
+        f"guardian: {prefix} {sanitise(kind)} {sanitise(actor)} -> "
         f"{sanitise(target)}{where} (reason: {sanitise(rule)})"
     )
 
@@ -76,7 +76,7 @@ class RoomNotifier:
         if now - self._window_started >= self._dedupe_s:
             if self._suppressed:
                 logger.warning(
-                    "family_guard: suppressed %d notices in the last %.0fs "
+                    "guardian: suppressed %d notices in the last %.0fs "
                     "(cap %d per window)",
                     self._suppressed,
                     self._dedupe_s,
@@ -125,7 +125,7 @@ class RoomNotifier:
             )
         except Exception:
             logger.exception(
-                "family_guard: could not post notice to %s as %s (is %s joined?)",
+                "guardian: could not post notice to %s as %s (is %s joined?)",
                 self._room_id,
                 self._sender,
                 self._sender,

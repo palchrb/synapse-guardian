@@ -1,9 +1,9 @@
 """Publishing the rule set the module actually loaded into the control room.
 
 The maubot plugin is an ordinary Matrix client: it can read the rule state
-events it wrote itself, but it cannot see `homeserver.yaml`. So `!fg list` and
-`!fg check` were blind to the static baseline. The module publishes a single
-`family_guard.effective_rules` state event describing what it really has, and
+events it wrote itself, but it cannot see `homeserver.yaml`. So `!guard list` and
+`!guard check` were blind to the static baseline. The module publishes a single
+`guardian.effective_rules` state event describing what it really has, and
 the bot reads that.
 
 Written only when the content changes. `updated_ts` moves on every refresh, so
@@ -18,16 +18,16 @@ import time
 from collections.abc import Mapping
 from typing import Any, Callable
 
-from family_guard.policy import RuleSet
+from synapse_guardian.policy import RuleSet
 
 logger = logging.getLogger(__name__)
 
-EFFECTIVE_RULES_TYPE = "family_guard.effective_rules"
+EFFECTIVE_RULES_TYPE = "guardian.effective_rules"
 
 
 
 class RoomPublisher:
-    """Keeps `family_guard.effective_rules` in the control room up to date.
+    """Keeps `guardian.effective_rules` in the control room up to date.
 
     Sent as `sender`, who must be a local user joined to the room and able to
     send this state event type. A failure (usually too low a power level) is
@@ -78,7 +78,7 @@ class RoomPublisher:
             if not self._warned:
                 self._warned = True
                 logger.warning(
-                    "family_guard: cannot publish %s into %s as %s (%s); "
+                    "guardian: cannot publish %s into %s as %s (%s); "
                     "grant that user power to send %s (50 in the room's "
                     "m.room.power_levels 'events' map). The bot will keep "
                     "showing room rules only.",
@@ -100,7 +100,7 @@ class RoomPublisher:
             )
         except Exception:
             logger.exception(
-                "family_guard: could not read %s from %s", EFFECTIVE_RULES_TYPE, self._room_id
+                "guardian: could not read %s from %s", EFFECTIVE_RULES_TYPE, self._room_id
             )
             return None
         event = state.get((EFFECTIVE_RULES_TYPE, ""))

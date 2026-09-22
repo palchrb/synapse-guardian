@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bot"))
 
 from mautrix.types import EventType, StateEvent  # noqa: E402
 
-from family_guard_bot import (  # noqa: E402
+from guardian_bot import (  # noqa: E402
     event_level,
     power_levels_and_create,
     user_level,
@@ -31,7 +31,7 @@ PL_CONTENT = {
     "users": {BOT: 50},  # the creator must NOT be listed in a v12 room
     "users_default": 0,
     "state_default": 100,
-    "events": {"family_guard.protected_user": 50},
+    "events": {"guardian.protected_user": 50},
 }
 
 
@@ -64,7 +64,7 @@ def make_state(room_version: str) -> list[StateEvent]:
 def test_creator_outranks_the_rule_event_in_v12() -> None:
     pl, create = power_levels_and_create(make_state("12"))
     needed = event_level(
-        pl, EventType.find("family_guard.protected_user", EventType.Class.STATE)
+        pl, EventType.find("guardian.protected_user", EventType.Class.STATE)
     )
     assert needed == 50
     assert user_level(pl, create, CREATOR) > needed
@@ -81,7 +81,7 @@ def test_event_level_matches_the_server_not_the_type_class() -> None:
     been registered globally by an earlier test.)
     """
     pl, _ = power_levels_and_create(make_state("12"))
-    rule_type = EventType.find("family_guard.protected_user", EventType.Class.STATE)
+    rule_type = EventType.find("guardian.protected_user", EventType.Class.STATE)
     assert event_level(pl, rule_type) == 50
 
 
