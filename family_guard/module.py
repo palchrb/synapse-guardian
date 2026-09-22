@@ -16,6 +16,7 @@ from synapse.module_api.errors import Codes
 from family_guard.config import FamilyGuardConfig
 from family_guard.notify import Notifier, NullNotifier, RoomNotifier, format_block
 from family_guard.policy import RuleSet
+from family_guard.publish import NullPublisher, Publisher, RoomPublisher
 from family_guard.store import PolicyStore
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,20 @@ class FamilyGuard:
             )
         else:
             self._notifier = NullNotifier()
-        self._store = PolicyStore(api, config, on_admin_protected=self._on_admin_protected)
+        # Tell the control room what we actually loaded, so the bot can show the
+        # static baseline it cannot otherwise see. Needs somewhere to write and
+        # someone to write as.
+        self._publisher: Publisher
+        if config.control_room is not None and config.notify_user is not None:
+            self._publisher = RoomPublisher(api, config.control_room, config.notify_user)
+        else:
+            self._publisher = NullPublisher()
+        self._store = PolicyStore(
+            api,
+            config,
+            on_admin_protected=self._on_admin_protected,
+            on_rules_loaded=self._on_rules_loaded,
+        )
 
         api.register_spam_checker_callbacks(
             user_may_invite=self.user_may_invite,
@@ -118,6 +132,17 @@ class FamilyGuard:
             dry,
         )
         return NOT_SPAM if dry else Codes.FORBIDDEN
+
+    def _on_rules_loaded(self, rules: RuleSet) -> None:
+        """Publish in the background: this runs on the callback path via refresh()."""
+        self._api.run_as_background_process(
+            "family_guard_publish",
+            self._publisher.publish,
+            self._config.static_rules,
+            rules,
+            self._config.dry_run,
+            self._config.uninvited_joins,
+        )
 
     async def _on_admin_protected(self, user_id: str) -> None:
         # Sent in the background: this runs inside the callback path via refresh().

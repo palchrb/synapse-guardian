@@ -71,11 +71,18 @@ def test_creator_outranks_the_rule_event_in_v12() -> None:
 
 
 def test_event_level_matches_the_server_not_the_type_class() -> None:
-    """Regression: a typed lookup missed our entry and returned state_default."""
+    """Regression: a typed lookup missed our entry and returned state_default.
+
+    mautrix keys `content.events` by `EventType` and equality includes the type
+    class, so `get_event_level` could miss a `Class.UNKNOWN` entry while we
+    looked it up as `Class.STATE` -- making the bot stricter than the room. We
+    match on the type string, as Synapse does. (We deliberately do not assert
+    what mautrix's own lookup returns: that depends on whether the type has
+    been registered globally by an earlier test.)
+    """
     pl, _ = power_levels_and_create(make_state("12"))
     rule_type = EventType.find("family_guard.protected_user", EventType.Class.STATE)
-    assert pl.get_event_level(rule_type) == 100  # mautrix's own typed lookup misses
-    assert event_level(pl, rule_type) == 50  # ours matches what Synapse enforces
+    assert event_level(pl, rule_type) == 50
 
 
 def test_unlisted_state_event_falls_back_to_state_default() -> None:

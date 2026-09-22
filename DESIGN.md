@@ -261,6 +261,31 @@ synapse-module/
     └── test_module.py             # synapse HomeserverTestCase: real invites/joins, local + federated
 ```
 
+## Publishing the effective rules
+
+The maubot plugin is a plain Matrix client: it can read the rule state events
+it wrote, but not `homeserver.yaml`, so `!fg list` and `!fg check` were blind
+to the static baseline.
+
+When `control_room` and `notify_user` are both set, `RoomPublisher`
+(`family_guard/publish.py`) keeps one `family_guard.effective_rules` state
+event (state key `""`) in the control room, sent as `notify_user`, with
+`static`, `effective`, `dry_run`, `uninvited_joins` and `updated_ts`.
+`RuleSet.to_payload()`/`from_payload()` are the shared serialisation, so the
+bot rebuilds exactly the rule set the module enforces.
+
+- Driven by `PolicyStore`'s `on_rules_loaded` hook at the end of `refresh()`,
+  dispatched through `run_as_background_process` so it never blocks a callback.
+- Written only when the payload changes. `updated_ts` moves every refresh, so
+  Synapse's own state-event dedup would never fire; the in-memory comparison is
+  what keeps the room quiet. On the first publish after start-up the current
+  event is read back first, so a restart does not rewrite identical content.
+- `family_guard.effective_rules` is not one of the five rule kinds, so
+  `PolicyStore` ignores it and `on_new_event` cannot turn it into a refresh
+  loop (pinned by `test_publishing_does_not_invalidate_the_rule_cache`).
+- A failure (normally `notify_user` lacking power to send the type) is logged
+  once and never affects a decision.
+
 ## Testing
 
 The `matrix-synapse` wheel does not ship the `tests/` package. `test_module.py`

@@ -85,6 +85,8 @@ class FamilyGuardTestCase(unittest.HomeserverTestCase):
         self.module._store.control_room = self.control_room
         if hasattr(self.module._notifier, "_room_id"):
             self.module._notifier._room_id = self.control_room  # type: ignore[attr-defined]
+        if hasattr(self.module._publisher, "_room_id"):
+            self.module._publisher._room_id = self.control_room  # type: ignore[attr-defined]
 
     @staticmethod
     def _find_module(hs: HomeServer) -> FamilyGuard:
@@ -150,6 +152,42 @@ class FamilyGuardTestCase(unittest.HomeserverTestCase):
             for ev in channel.json_body["chunk"]
             if ev["type"] == "m.room.message" and ev["content"].get("msgtype") == "m.notice"
         ]
+
+    def published(self) -> list[dict]:
+        """Every family_guard.effective_rules event in the control room timeline."""
+        channel = self.make_request(
+            "GET",
+            f"/rooms/{self.control_room}/messages?dir=b&limit=100",
+            access_token=self.parent_tok,
+        )
+        self.assertEqual(channel.code, 200, channel.json_body)
+        return [
+            ev for ev in channel.json_body["chunk"]
+            if ev["type"] == "family_guard.effective_rules"
+        ]
+
+    def grant_bot_state_power(self) -> None:
+        """The publisher writes a state event, so notify_user needs power for it."""
+        channel = self.make_request(
+            "GET",
+            f"/rooms/{self.control_room}/state/m.room.power_levels/",
+            access_token=self.parent_tok,
+        )
+        self.assertEqual(channel.code, 200, channel.json_body)
+        content = dict(channel.json_body)
+        content.setdefault("users", {})[self.bot] = 50
+        events = dict(content.get("events") or {})
+        events["family_guard.effective_rules"] = 50
+        content["events"] = events
+        self.helper.send_state(
+            self.control_room, "m.room.power_levels", content, tok=self.parent_tok
+        )
+        self.pump()
+
+    def force_refresh(self) -> None:
+        self.module._store.invalidate()
+        self.get_success(self.module._store.get_rules())
+        self.pump()
 
     def mock_remote_profiles(self) -> None:
         """Synapse fetches a remote invitee's profile over federation before the spam check."""
@@ -497,6 +535,102 @@ class EmptyRoomEscapeTestCase(FamilyGuardTestCase):
             self.room, EventTypes.JoinRules, tok=self.kid_tok
         )
         self.assertEqual(state["join_rule"], JoinRules.INVITE)
+
+
+class PublishEffectiveRulesTestCase(FamilyGuardTestCase):
+    """The module tells the control room what it actually loaded.
+
+    The bot is a plain Matrix client and cannot read homeserver.yaml, so
+    without this `!fg list` and `!fg check` are blind to the static baseline.
+    """
+
+    def test_publishes_static_and_effective_rules(self) -> None:
+        self.grant_bot_state_power()
+        self.force_refresh()
+        events = self.published()
+        self.assertEqual(len(events), 1, events)
+        content = events[0]["content"]
+        self.assertEqual(events[0]["sender"], self.bot)
+        self.assertEqual(events[0]["state_key"], "")
+        self.assertEqual(content["static"]["protected_users"], [KID])
+        self.assertIn("friends.org", content["static"]["allowed_servers"])
+        self.assertEqual(content["effective"], content["static"])
+        self.assertFalse(content["dry_run"])
+        self.assertEqual(content["uninvited_joins"], "known_rooms")
+        self.assertIsInstance(content["updated_ts"], int)
+
+    def test_not_republished_when_nothing_changed(self) -> None:
+        self.grant_bot_state_power()
+        self.force_refresh()
+        self.force_refresh()
+        self.force_refresh()
+        self.assertEqual(len(self.published()), 1)
+
+    def test_republished_when_a_rule_is_added(self) -> None:
+        self.grant_bot_state_power()
+        self.force_refresh()
+        self.add_rule("allowed_server", "new.org")
+        self.force_refresh()
+        events = self.published()
+        self.assertEqual(len(events), 2, events)
+        newest = events[0]["content"]  # dir=b, newest first
+        self.assertIn("new.org", newest["effective"]["allowed_servers"])
+        self.assertNotIn("new.org", newest["static"]["allowed_servers"])
+
+    def test_restart_does_not_rewrite_an_identical_event(self) -> None:
+        self.grant_bot_state_power()
+        self.force_refresh()
+        self.assertEqual(len(self.published()), 1)
+        # A fresh publisher, as after a Synapse restart: it must prime itself
+        # from the room instead of writing the same content again.
+        from family_guard.publish import RoomPublisher
+
+        self.module._publisher = RoomPublisher(
+            self.module._api, self.control_room, self.bot
+        )
+        self.force_refresh()
+        self.assertEqual(len(self.published()), 1)
+
+    def test_publishing_does_not_invalidate_the_rule_cache(self) -> None:
+        """Our own event must never look like a rule change (no refresh loop)."""
+        self.grant_bot_state_power()
+        self.force_refresh()
+        self.assertFalse(self.module._store._stale)
+        self.assertFalse(
+            self.module._store.is_our_event_type("family_guard.effective_rules")
+        )
+
+    def test_missing_power_is_logged_once_and_blocking_still_works(self) -> None:
+        # No grant_bot_state_power(): the bot cannot send the state event.
+        # Room setup already warned through this publisher, so start a fresh one
+        # to see the warn-once behaviour from the beginning.
+        from family_guard.publish import RoomPublisher
+
+        self.module._publisher = RoomPublisher(
+            self.module._api, self.control_room, self.bot
+        )
+        with self.assertLogs("family_guard.publish", level="WARNING") as logs:
+            self.force_refresh()
+            self.force_refresh()
+        self.assertEqual(len(self.published()), 0)
+        warnings = [r for r in logs.records if r.levelname == "WARNING"]
+        self.assertEqual(len(warnings), 1, [r.getMessage() for r in warnings])
+        self.assertIn("family_guard.effective_rules", warnings[0].getMessage())
+        self.assert_federated_invite_blocked("@stranger:stranger.org", room_id="!a:stranger.org")
+
+
+class NoPublishTestCase(FamilyGuardTestCase):
+    """Without somewhere to write, or someone to write as, we publish nothing."""
+
+    CONFIG_OVERRIDES = {"notify_user": None}
+
+    def test_no_publisher_without_notify_user(self) -> None:
+        from family_guard.publish import NullPublisher
+
+        self.assertIsInstance(self.module._publisher, NullPublisher)
+        self.grant_bot_state_power()
+        self.force_refresh()
+        self.assertEqual(len(self.published()), 0)
 
 
 class ControlRoomTestCase(FamilyGuardTestCase):

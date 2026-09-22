@@ -15,6 +15,7 @@ Evaluation principle: the more specific rule wins; on a tie, block wins.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Callable, Iterable, Pattern
 
@@ -265,6 +266,26 @@ class RuleSet:
             if rule.matches(server):
                 return Decision(True, rule.label)
         return Decision(False, None)
+
+    def to_payload(self) -> dict[str, list[str]]:
+        """Plain JSON shape, keyed by the plural config/room names."""
+        payload = {PLURAL[KIND_PROTECTED_USER]: sorted(self.protected_users)}
+        for kind in RULE_KINDS:
+            payload[PLURAL[kind]] = [rule.pattern for rule in getattr(self, PLURAL[kind])]
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: object) -> "RuleSet":
+        """Rebuild from `to_payload`. Anything unparseable is skipped, never fatal."""
+        if not isinstance(payload, Mapping):
+            return EMPTY
+        entries: list[tuple[str, str]] = []
+        for kind in ALL_KINDS:
+            patterns = payload.get(PLURAL[kind])
+            if not isinstance(patterns, (list, tuple)):
+                continue
+            entries.extend((kind, p) for p in patterns if isinstance(p, str))
+        return cls.build(entries, on_invalid=lambda *_: None)
 
     def entries(self) -> list[tuple[str, str]]:
         """All (kind, pattern) pairs, for listing."""

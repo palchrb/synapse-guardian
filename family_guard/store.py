@@ -46,11 +46,13 @@ class PolicyStore:
         config: FamilyGuardConfig,
         clock: Callable[[], float] = time.monotonic,
         on_admin_protected: Callable[[str], Awaitable[None]] | None = None,
+        on_rules_loaded: Callable[[RuleSet], None] | None = None,
     ) -> None:
         self._api = api
         self._config = config
         self._clock = clock
         self._on_admin_protected = on_admin_protected
+        self._on_rules_loaded = on_rules_loaded
         self.control_room: str | None = config.control_room
         self._rules: RuleSet | None = None
         self._loaded_at: float = 0.0
@@ -97,6 +99,12 @@ class PolicyStore:
         self._loaded_at = self._clock()
         self._stale = False
         await self._check_admins(rules)
+        if self._on_rules_loaded is not None:
+            # Must not block the callback that triggered this refresh.
+            try:
+                self._on_rules_loaded(rules)
+            except Exception:
+                logger.exception("family_guard: rules-loaded hook failed")
         return rules
 
     async def _read_control_room(self, room_id: str) -> RuleSet:

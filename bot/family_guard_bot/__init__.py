@@ -8,7 +8,11 @@ themselves (power levels), plus optionally membership in `admins`.
 
 from __future__ import annotations
 
+import html
+import re
 import time
+import urllib.parse
+from collections.abc import Mapping
 from typing import Any
 
 from maubot import MessageEvent, Plugin
@@ -30,6 +34,9 @@ from .policy import (
 )
 
 EVENT_TYPE_PREFIX = "family_guard."
+# Published by the module: the rule set it actually loaded, including the
+# homeserver.yaml baseline we cannot see from here.
+EFFECTIVE_RULES_TYPE = "family_guard.effective_rules"
 KINDS = (
     KIND_PROTECTED_USER,
     KIND_ALLOWED_SERVER,
@@ -65,6 +72,120 @@ class Config(BaseProxyConfig):
     def do_update(self, helper: ConfigUpdateHelper) -> None:
         helper.copy("control_room")
         helper.copy("admins")
+
+
+# Element sends a pill as a matrix.to link in `formatted_body`, leaving only the
+# display name in `body`. Both link forms below appear in the wild.
+_LINK_RE = re.compile(
+    r'<a\b[^>]*\bhref="(?P<href>[^"]+)"[^>]*>(?P<text>.*?)</a>', re.IGNORECASE | re.DOTALL
+)
+_MATRIX_TO_RE = re.compile(r"^https?://matrix\.to/#/(?P<id>[^?]+)", re.IGNORECASE)
+_MATRIX_URI_RE = re.compile(r"^matrix:u/(?P<id>[^?]+)", re.IGNORECASE)
+
+
+def _user_id_from_href(href: str) -> str | None:
+    """The MXID a link points at, or None if it is not a user link."""
+    href = html.unescape(href).strip()
+    match = _MATRIX_TO_RE.match(href)
+    if match:
+        candidate = urllib.parse.unquote(match.group("id"))
+    else:
+        match = _MATRIX_URI_RE.match(href)
+        if not match:
+            return None
+        # matrix:u/user:server omits the sigil
+        candidate = "@" + urllib.parse.unquote(match.group("id"))
+    return candidate if is_user_id(candidate) else None
+
+
+def resolve_user_arg(arg: str, formatted_body: str | None) -> str:
+    """Turn a pill's display name back into an MXID, if that is what `arg` is.
+
+    Returns `arg` unchanged when it already is an MXID, when there is nothing
+    usable in `formatted_body`, or when the pills are ambiguous -- so the
+    caller's "is not a user ID" error still fires.
+    """
+    if is_user_id(arg):
+        return arg  # an explicit MXID always wins over the rendered body
+    if not formatted_body or not isinstance(formatted_body, str):
+        return arg
+    links: list[tuple[str, str]] = []  # (anchor text, mxid)
+    for match in _LINK_RE.finditer(formatted_body):
+        user_id = _user_id_from_href(match.group("href"))
+        if user_id is None:
+            continue  # room, alias or event link
+        text = html.unescape(re.sub(r"<[^>]+>", "", match.group("text"))).strip()
+        links.append((text, user_id))
+    if not links:
+        return arg
+    wanted = arg.strip()
+    for text, user_id in links:
+        if text == wanted or text.lstrip("@") == wanted.lstrip("@"):
+            return user_id
+    return links[0][1] if len(links) == 1 else arg
+
+
+def formatted_body_of(evt: MessageEvent) -> str | None:
+    """`formatted_body` if this message has one."""
+    body = getattr(evt.content, "formatted_body", None)
+    return body if isinstance(body, str) else None
+
+
+def _content_dict(content: Any) -> dict[str, Any]:
+    if hasattr(content, "serialize"):
+        return dict(content.serialize())
+    try:
+        return dict(content)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def entries_from_state(state: list[StateEvent]) -> list[tuple[str, str, str, dict[str, Any]]]:
+    """(kind, entity, state_key, content) for every active rule entry in `state`."""
+    out: list[tuple[str, str, str, dict[str, Any]]] = []
+    for ev in state:
+        t = str(ev.type)
+        if not t.startswith(EVENT_TYPE_PREFIX):
+            continue
+        kind = t[len(EVENT_TYPE_PREFIX):]
+        if kind not in KINDS:
+            continue
+        content = _content_dict(ev.content)
+        if not content:
+            continue
+        entity = content.get("entity", ev.state_key)
+        if isinstance(entity, str):
+            out.append((kind, entity, str(ev.state_key), content))
+    return out
+
+
+def published_payload(state: list[StateEvent]) -> dict[str, Any] | None:
+    """The module's `family_guard.effective_rules` content, or None if absent."""
+    for ev in state:
+        if str(ev.type) == EFFECTIVE_RULES_TYPE and str(ev.state_key) == "":
+            content = _content_dict(ev.content)
+            return content or None
+    return None
+
+
+def static_extra_lines(payload: dict[str, Any] | None, shown: set[tuple[str, str]]) -> list[str]:
+    """Lines describing static rules that the room listing does not already show."""
+    if not payload:
+        return []
+    static = payload.get("static")
+    if not isinstance(static, Mapping):
+        return []
+    lines: list[str] = []
+    for kind in KINDS:
+        patterns = static.get(kind + "s")
+        if not isinstance(patterns, (list, tuple)):
+            continue
+        extra = [p for p in patterns if isinstance(p, str) and (kind, p) not in shown]
+        if not extra:
+            continue
+        lines.append(f"**{kind}** (homeserver.yaml)")
+        lines.extend(f"- `{p}`" for p in sorted(extra))
+    return lines
 
 
 def power_levels_and_create(
@@ -173,22 +294,7 @@ class FamilyGuardBot(Plugin):
         self, room_id: RoomID
     ) -> list[tuple[str, str, str, dict[str, Any]]]:
         """(kind, entity, state_key, content) for every active entry in the room."""
-        out: list[tuple[str, str, str, dict[str, Any]]] = []
-        state: list[StateEvent] = await self.client.get_state(room_id)
-        for ev in state:
-            t = str(ev.type)
-            if not t.startswith(EVENT_TYPE_PREFIX):
-                continue
-            kind = t[len(EVENT_TYPE_PREFIX):]
-            if kind not in KINDS:
-                continue
-            content = ev.content.serialize() if hasattr(ev.content, "serialize") else dict(ev.content)
-            if not content:
-                continue
-            entity = content.get("entity", ev.state_key)
-            if isinstance(entity, str):
-                out.append((kind, entity, str(ev.state_key), content))
-        return out
+        return entries_from_state(await self.client.get_state(room_id))
 
     async def write_entry(self, evt: MessageEvent, kind: str, entity: str, reason: str | None) -> None:
         content: dict[str, Any] = {
@@ -245,6 +351,7 @@ class FamilyGuardBot(Plugin):
     async def protect(self, evt: MessageEvent, mxid: str, reason: str | None) -> None:
         if not self.in_control_room(evt):
             return
+        mxid = resolve_user_arg(mxid, formatted_body_of(evt))
         if not is_user_id(mxid) or mxid.split(":", 1)[1] != self.server_name:
             await evt.reply(f"`{mxid}` is not a user on {self.server_name}; only local users can be protected.")
             return
@@ -258,6 +365,7 @@ class FamilyGuardBot(Plugin):
     async def unprotect(self, evt: MessageEvent, mxid: str) -> None:
         if not self.in_control_room(evt):
             return
+        mxid = resolve_user_arg(mxid, formatted_body_of(evt))
         await self.remove(evt, KIND_PROTECTED_USER, mxid)
 
     @fg.subcommand("allow", help="Allow a server or user: !fg allow server <glob> | !fg allow user <mxid|glob> [reason]")
@@ -292,6 +400,8 @@ class FamilyGuardBot(Plugin):
         if not self.in_control_room(evt):
             return
         what = what.lower()
+        if what == "user":
+            pattern = resolve_user_arg(pattern, formatted_body_of(evt))
         if (verb, what) in VERB_KINDS:
             await self.add(evt, VERB_KINDS[(verb, what)], pattern, reason)
         elif (verb, what) in REMOVE_KINDS:
@@ -303,10 +413,9 @@ class FamilyGuardBot(Plugin):
     async def list_cmd(self, evt: MessageEvent) -> None:
         if not self.in_control_room(evt):
             return
-        entries = await self.current_entries(evt.room_id)
-        if not entries:
-            await evt.reply("No rules in this room (static homeserver.yaml rules are not shown).")
-            return
+        state: list[StateEvent] = await self.client.get_state(evt.room_id)
+        entries = [(k, e, c) for k, e, _, c in entries_from_state(state)]
+        payload = published_payload(state)
         lines: list[str] = []
         for kind in KINDS:
             rows = sorted((e, c) for k, e, c in entries if k == kind)
@@ -323,9 +432,20 @@ class FamilyGuardBot(Plugin):
                     meta.append(str(content["reason"]))
                 suffix = f" — {', '.join(meta)}" if meta else ""
                 lines.append(f"- `{entity}`{suffix}")
+        if not lines:
+            lines.append("_No rules set in this room._")
+        extra = static_extra_lines(payload, {(k, e) for k, e, _ in entries})
         # Blank line first: Markdown would otherwise fold this into the last bullet.
-        lines.append("")
-        lines.append("_Static rules from homeserver.yaml also apply and are not listed here._")
+        if extra:
+            lines.append("")
+            lines.extend(extra)
+        elif payload is None:
+            lines.append("")
+            lines.append(
+                "_Static homeserver.yaml rules also apply but are not shown: the module "
+                "has not published `family_guard.effective_rules` here (check that "
+                "`notify_user` may send that state event)._"
+            )
         await evt.reply("\n".join(lines))
 
     @fg.subcommand("check", help="Would this user be allowed to interact with the kids? !fg check @x:server")
@@ -333,14 +453,20 @@ class FamilyGuardBot(Plugin):
     async def check(self, evt: MessageEvent, mxid: str) -> None:
         if not self.in_control_room(evt):
             return
+        mxid = resolve_user_arg(mxid, formatted_body_of(evt))
         if not is_user_id(mxid):
             await evt.reply(f"`{mxid}` is not a user ID.")
             return
-        entries = await self.current_entries(evt.room_id)
-        rules = RuleSet.build([(k, e) for k, e, _ in entries], on_invalid=lambda *a: None)
+        state: list[StateEvent] = await self.client.get_state(evt.room_id)
+        payload = published_payload(state)
+        if payload is not None:
+            # What the module actually enforces, static baseline included.
+            rules = RuleSet.from_payload(payload.get("effective"))
+            scope = "the rules the module has loaded"
+        else:
+            entries = entries_from_state(state)
+            rules = RuleSet.build([(k, e) for k, e, _, _ in entries], on_invalid=lambda *a: None)
+            scope = "room rules only — static homeserver.yaml rules are not included"
         decision = rules.evaluate(mxid)
         verdict = "ALLOWED" if decision.allowed else "BLOCKED"
-        await evt.reply(
-            f"`{mxid}`: **{verdict}** (rule: `{decision.reason}`; room rules only — "
-            "static homeserver.yaml rules such as your own server are not included)"
-        )
+        await evt.reply(f"`{mxid}`: **{verdict}** (rule: `{decision.reason}`; {scope})")

@@ -158,11 +158,23 @@ the module in a worker deployment.**
    do not publish it, and never invite the protected users.
    (Encryption is unnecessary — state events are never encrypted — and would
    make the module's server-side notices show as "unencrypted".)
-2. Set power levels so only you (and the bot) can write rules:
-   `state_default: 100`, or per type in `events`:
-   `family_guard.protected_user`, `family_guard.allowed_server`,
-   `family_guard.allowed_user`, `family_guard.blocked_user`,
-   `family_guard.blocked_server`. Give the bot exactly that level.
+2. Set power levels so only you (and the bot) can write rules. Keep
+   `state_default: 100` and grant the six types the bot needs at 50, in the
+   `events` map of `m.room.power_levels`:
+
+   ```json
+   "events": {
+     "family_guard.protected_user": 50,
+     "family_guard.allowed_server": 50,
+     "family_guard.allowed_user": 50,
+     "family_guard.blocked_user": 50,
+     "family_guard.blocked_server": 50,
+     "family_guard.effective_rules": 50
+   }
+   ```
+
+   `family_guard.effective_rules` is written by the **module** as `notify_user`
+   (see below), not by you; without it the bot cannot show static rules.
 3. Invite the bot account and have it join. Disable auto-join on the maubot
    client (Manage clients → Autojoin off) so it can never be lured elsewhere.
    Use a strong maubot admin password; the maubot UI can send anything as the
@@ -178,6 +190,29 @@ Rules are state events, one per entry. Empty content means "removed":
 | `family_guard.allowed_user`   | `granny:other.org`             | `{"entity": "@granny:other.org", ...}`            |
 | `family_guard.blocked_user`   | `troll:friends.org`            | `{"entity": "@troll:friends.org", ...}`           |
 | `family_guard.blocked_server` | `evil.skole.no`                | `{"entity": "evil.skole.no", ...}`                |
+
+### What the module publishes back
+
+When `control_room` and `notify_user` are both set, the module keeps one extra
+state event in the room, `family_guard.effective_rules` (state key `""`), sent
+as `notify_user`:
+
+```json
+{
+  "static":    {"protected_users": [...], "allowed_servers": [...], "...": []},
+  "effective": {"...": "static merged with the room rules the module accepted"},
+  "dry_run": false,
+  "uninvited_joins": "known_rooms",
+  "updated_ts": 1758547200000
+}
+```
+
+The bot is an ordinary Matrix client and cannot read `homeserver.yaml`, so this
+is how `!fg list` shows the static baseline and how `!fg check` answers with
+the rules actually in force. It is rewritten only when the content changes, and
+a restart re-reads it first rather than rewriting an identical event. If
+`notify_user` lacks power to send it, the module logs one warning and carries
+on — enforcement is unaffected, and the bot falls back to room rules only.
 
 The entity is read from `content.entity` (falling back to the state key,
 which only works for server entries since user IDs need the `@`). State keys
@@ -195,7 +230,7 @@ If the room becomes unreadable, the module keeps the last known rules.
 !fg allow user <mxid|glob> [reason]       !fg remove user <mxid|glob>
 !fg block user <mxid|glob> [reason]       !fg unblock user <mxid|glob>
 !fg block server <glob> [reason]          !fg unblock server <glob>
-!fg list                                  # grouped, with who/when/why
+!fg list                                  # grouped, with who/when/why, plus static rules
 !fg check @someone:server.org             # evaluate with the same rule code
 ```
 
