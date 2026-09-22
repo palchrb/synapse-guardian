@@ -90,9 +90,12 @@ class FamilyGuard:
         return NOT_SPAM if dry else Codes.FORBIDDEN
 
     async def _on_admin_protected(self, user_id: str) -> None:
-        await self._notifier.message(
+        # Sent in the background: this runs inside the callback path via refresh().
+        self._api.run_as_background_process(
+            "family_guard_notify",
+            self._notifier.message,
             f"family_guard: WARNING protected user {user_id} is a server admin; "
-            "Synapse skips invite/join checks for admins, so this user is NOT protected"
+            "Synapse skips invite/join checks for admins, so this user is NOT protected",
         )
 
     # --- spam checker callbacks -------------------------------------------
