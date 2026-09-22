@@ -619,6 +619,34 @@ class PublishEffectiveRulesTestCase(FamilyGuardTestCase):
         self.assert_federated_invite_blocked("@stranger:stranger.org", room_id="!a:stranger.org")
 
 
+class WarmUpTestCase(FamilyGuardTestCase):
+    """Rules must load without waiting for the first invite or join.
+
+    Regression: the store loads lazily from callbacks, so a server with no
+    traffic after a restart never loaded -- and so never published
+    `family_guard.effective_rules`, leaving the bot unable to show static rules.
+    """
+
+    def test_rules_are_loaded_without_any_traffic(self) -> None:
+        self.assertIsNotNone(self.module._store.cached)
+
+    def test_warm_up_publishes_the_effective_rules(self) -> None:
+        """The warm-up feeds the publisher, so a quiet server still tells the room.
+
+        The harness grants the bot power only after the module has started, so
+        the start-up warm-up cannot have published yet; run it again now that it
+        can, which is the same code path.
+        """
+        self.grant_bot_state_power()
+        self.module._store.invalidate()
+        self.get_success(self.module._warm_up())
+        self.pump(1)
+        state = self.get_success(
+            self.hs.get_storage_controllers().state.get_current_state(self.control_room)
+        )
+        self.assertIn(("family_guard.effective_rules", ""), state)
+
+
 class NoPublishTestCase(FamilyGuardTestCase):
     """Without somewhere to write, or someone to write as, we publish nothing."""
 

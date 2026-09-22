@@ -96,6 +96,14 @@ class FamilyGuard:
             callbacks["on_new_event"] = self.on_new_event
         if callbacks:
             api.register_third_party_rules_callbacks(**callbacks)
+        # Rules load lazily, on the first callback. Without a nudge, a server
+        # that sees no invite or join after a restart never loads them -- and so
+        # never publishes `family_guard.effective_rules` either, leaving the bot
+        # blind to the static rules. Warm up shortly after start-up instead.
+        if config.control_room is not None:
+            api.delayed_background_call(
+                100, self._warm_up, desc="family_guard_warm_up"
+            )
         logger.info(
             "family_guard: loaded (control_room=%s, watching=%s, strict_local_events=%s, "
             "uninvited_joins=%s, dry_run=%s)",
@@ -105,6 +113,13 @@ class FamilyGuard:
             config.uninvited_joins,
             config.dry_run,
         )
+
+    async def _warm_up(self) -> None:
+        """Load the rules once at start-up so they are published without traffic."""
+        try:
+            await self._store.get_rules()
+        except Exception:
+            logger.exception("family_guard: initial rule load failed")
 
     @staticmethod
     def parse_config(config: dict[str, Any] | None) -> FamilyGuardConfig:
