@@ -6,7 +6,7 @@ events it wrote itself, but it cannot see `homeserver.yaml`. So `!guard list` an
 `guardian.effective_rules` state event describing what it really has, and
 the bot reads that.
 
-Written only when the content changes. `updated_ts` moves on every refresh, so
+Written only when the content changes, so
 Synapse's own state-event deduplication would never fire; the comparison here
 is what keeps the room quiet.
 """
@@ -72,7 +72,12 @@ class RoomPublisher:
                     "state_key": "",
                     "room_id": self._room_id,
                     "sender": self._sender,
-                    "content": {**payload, "updated_ts": int(self._clock() * 1000)},
+                    # No timestamp in the content: the event carries
+                    # `origin_server_ts` already, and a moving field would defeat
+                    # Synapse's own identical-state-event dedup
+                    # (handlers/message.py:886-919 compares the whole content),
+                    # which is what protects us when several workers publish.
+                    "content": payload,
                 }
             )
         except Exception as e:  # noqa: BLE001
@@ -108,4 +113,5 @@ class RoomPublisher:
         event = state.get((EFFECTIVE_RULES_TYPE, ""))
         if event is None or not isinstance(event.content, Mapping) or not event.content:
             return None
+        # Tolerate `updated_ts` left over from <=0.5.0.
         return {k: v for k, v in event.content.items() if k != "updated_ts"}

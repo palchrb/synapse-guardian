@@ -270,8 +270,7 @@ as `notify_user`:
   "static":    {"protected_users": [...], "allowed_servers": [...], "...": []},
   "effective": {"...": "static merged with the room rules the module accepted"},
   "dry_run": false,
-  "uninvited_joins": "known_rooms",
-  "updated_ts": 1758547200000
+  "uninvited_joins": "known_rooms"
 }
 ```
 

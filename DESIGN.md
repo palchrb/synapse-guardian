@@ -289,13 +289,16 @@ to the static baseline.
 When `control_room` and `notify_user` are both set, `RoomPublisher`
 (`synapse_guardian/publish.py`) keeps one `guardian.effective_rules` state
 event (state key `""`) in the control room, sent as `notify_user`, with
-`static`, `effective`, `dry_run`, `uninvited_joins` and `updated_ts`.
+`static`, `effective`, `dry_run` and `uninvited_joins`. No timestamp: the
+event carries `origin_server_ts`, and a moving field would defeat Synapse's own
+identical-state-event dedup (`handlers/message.py:886`), which is what stops
+several workers writing duplicates.
 `RuleSet.to_payload()`/`from_payload()` are the shared serialisation, so the
 bot rebuilds exactly the rule set the module enforces.
 
 - Driven by `PolicyStore`'s `on_rules_loaded` hook at the end of `refresh()`,
   dispatched through `run_as_background_process` so it never blocks a callback.
-- Written only when the payload changes. `updated_ts` moves every refresh, so
+- Written only when the payload changes, so
   Synapse's own state-event dedup would never fire; the in-memory comparison is
   what keeps the room quiet. On the first publish after start-up the current
   event is read back first, so a restart does not rewrite identical content.

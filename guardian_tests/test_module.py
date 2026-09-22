@@ -557,7 +557,7 @@ class PublishEffectiveRulesTestCase(GuardianTestCase):
         self.assertEqual(content["effective"], content["static"])
         self.assertFalse(content["dry_run"])
         self.assertEqual(content["uninvited_joins"], "known_rooms")
-        self.assertIsInstance(content["updated_ts"], int)
+        self.assertNotIn("updated_ts", content)  # would defeat Synapse's dedup
 
     def test_not_republished_when_nothing_changed(self) -> None:
         self.grant_bot_state_power()
@@ -590,6 +590,38 @@ class PublishEffectiveRulesTestCase(GuardianTestCase):
         )
         self.force_refresh()
         self.assertEqual(len(self.published()), 1)
+
+    def test_a_second_publisher_cannot_write_a_duplicate(self) -> None:
+        """Several workers each publish; Synapse must collapse the duplicates.
+
+        Each worker process runs its own publisher, and at start-up they all
+        prime before any of them has written. Our in-process check cannot help
+        there -- only Synapse's identical-state-event dedup can, and a moving
+        timestamp in the content would defeat it (handlers/message.py:886).
+        """
+        from synapse_guardian.publish import RoomPublisher
+
+        self.grant_bot_state_power()
+        self.force_refresh()
+        self.assertEqual(len(self.published()), 1)
+        first = self.published()[0]
+
+        # A second worker that primed before the first one wrote: it believes
+        # nothing is published and sends anyway.
+        other = RoomPublisher(self.module._api, self.control_room, self.bot)
+        other._primed = True
+        other._last = None
+        self.get_success(
+            other.publish(
+                self.module._config.static_rules,
+                self.get_success(self.module._store.get_rules()),
+                self.module._config.dry_run,
+                self.module._config.uninvited_joins,
+            )
+        )
+        events = self.published()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event_id"], first["event_id"])
 
     def test_publishing_does_not_invalidate_the_rule_cache(self) -> None:
         """Our own event must never look like a rule change (no refresh loop)."""
