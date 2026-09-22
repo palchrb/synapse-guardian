@@ -51,13 +51,25 @@ class FamilyGuard:
             user_may_join_room=self.user_may_join_room,
             user_may_publish_room=self.user_may_publish_room,
         )
-        api.register_third_party_rules_callbacks(
-            check_event_allowed=self.check_event_allowed,
-            on_new_event=self.on_new_event,
-        )
+        # `on_new_event` is only useful when there is a control room to watch, and
+        # it is expensive: Synapse fetches the event *and the room's full current
+        # state* for every event persisted, in every process that dispatches it
+        # (third_party_event_rules_callbacks.py:408-425). Registering it when we
+        # cannot use it would tax the whole server for nothing.
+        self._watching_control_room = config.control_room is not None and config.watch_control_room
+        if self._watching_control_room:
+            api.register_third_party_rules_callbacks(
+                check_event_allowed=self.check_event_allowed,
+                on_new_event=self.on_new_event,
+            )
+        else:
+            api.register_third_party_rules_callbacks(
+                check_event_allowed=self.check_event_allowed,
+            )
         logger.info(
-            "family_guard: loaded (control_room=%s, uninvited_joins=%s, dry_run=%s)",
+            "family_guard: loaded (control_room=%s, watching=%s, uninvited_joins=%s, dry_run=%s)",
             config.control_room,
+            self._watching_control_room,
             config.uninvited_joins,
             config.dry_run,
         )

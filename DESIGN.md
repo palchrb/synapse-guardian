@@ -93,6 +93,12 @@ in the module API (`__init__` is sync), so loading is lazy:
   one of ours, mark the cache stale so the next check re-reads via
   `get_room_state` (cheap; Synapse caches state). On a monolith this makes
   changes effective before the next callback.
+- `on_new_event` is registered only when a `control_room` is set and
+  `watch_control_room` (default true) is on: Synapse loads the event *and the
+  room's full current state* for every persisted event on every process that
+  dispatches the callback, so registering it unusable would tax the whole
+  server. Verified dispatched on workers too, via the events replication
+  stream (`replication/tcp/client.py:222`).
 - TTL refresh (`refresh_interval_s`, default 30): on the next check after
   expiry, re-read room state. Safety net for worker deployments where
   `on_new_event` fires on a different process than the spam-checker callbacks.

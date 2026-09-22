@@ -70,7 +70,8 @@ modules:
       notify_user: "@family-guard-bot:example.org"  # required with notify_room
       notify_dedupe_s: 300
       trusted_senders: []                    # extra local users whose room entries count
-      refresh_interval_s: 30
+      refresh_interval_s: 30                 # max seconds before a rule change is picked up
+      watch_control_room: true               # see "Workers" before turning this off
       dry_run: false                         # log/notify only, never block
 ```
 
@@ -87,8 +88,50 @@ modules:
 - `dry_run` still logs and notifies (prefixed `[dry-run]`) so you can calibrate
   before enforcing. Remember to run `scripts/reject_pending_invites.py`
   afterwards (see gaps).
+- `watch_control_room` (default `true`): watch the control room for changes so
+  rule edits apply immediately. It registers Synapse's `on_new_event` callback,
+  which makes Synapse load every persisted event **and that room's full current
+  state** on every process that dispatches it — a server-wide cost paid for one
+  room. Set it to `false` on a busy server to rely on `refresh_interval_s`
+  instead. It is never registered when `control_room` is unset.
 
 Config errors make Synapse refuse to start.
+
+## Workers
+
+Verified against Synapse 1.161. Short version: **no invite or join can slip past
+the module in a worker deployment.**
+
+- **Every process loads the module.** `synapse/app/_base.py:713-717` instantiates
+  the `modules:` list, and both `app/homeserver.py:450` and
+  `app/generic_worker.py:446` run that function. Workers share `homeserver.yaml`,
+  so there is nothing extra to configure — but the module must be importable in
+  every worker's Python environment (trivially true unless workers run in
+  separate containers, in which case install it in each image).
+- **The checks run on the worker handling the request.**
+  `update_membership_locked` — which contains the `user_may_invite`
+  (`handlers/room_member.py:914`) and `user_may_join_room`
+  (`handlers/room_member.py:1075`) calls — lives on the shared
+  `RoomMemberHandler` base class. `RoomMemberWorkerHandler` only overrides
+  `_remote_join`/`remote_knock`/`remote_reject_invite`, which run *after* the
+  checks and merely hand the federation work to the event persister over
+  replication. Inbound federated invites are handled in-process by whichever
+  worker serves the federation listener (`handlers/federation.py:1134`), with no
+  replication hop.
+- **Each worker keeps its own rule cache**, refreshed independently.
+- **Rule changes propagate fast.** `on_new_event` is dispatched both by the
+  persister (`notifier.py:413` via `handlers/message.py:2211`) *and* by every
+  worker that receives the events replication stream
+  (`replication/tcp/client.py:222`), so with `watch_control_room: true` a `!fg`
+  command takes effect on all workers within replication latency. With it off,
+  worst case is `refresh_interval_s` (default 30 s).
+- **`notify_room` works on any worker.** `create_and_send_event_into_room` goes
+  through `create_and_send_nonmember_event`, which forwards to the room's event
+  writer over replication when the local instance is not it
+  (`handlers/message.py:1779-1802`).
+- Everything else the module calls (`get_room_state`, `is_user_admin`,
+  `is_mine`, `run_as_background_process`) is a worker-store read or local
+  helper, available everywhere.
 
 ## Control room setup
 
@@ -186,7 +229,9 @@ leaves them, then logs the temporary token out.
   admin; the module logs an error (and notifies) if it is.
 - Server names with a port (`ex.org:8448`) do not match the bare glob `ex.org`.
 - Room upgrades of the control room are not followed; update `control_room`.
-- Workers: rule changes propagate within `refresh_interval_s`.
+- Workers: enforcement is complete on every worker (see [Workers](#workers)).
+  Rule *changes* propagate within replication latency, or within
+  `refresh_interval_s` if `watch_control_room` is off.
 
 ## Phase 2 ideas
 

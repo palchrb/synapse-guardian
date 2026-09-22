@@ -1,12 +1,16 @@
+import time
+
 import pytest
 
 from family_guard.policy import (
+    MAX_SUBJECT_LEN,
     KIND_ALLOWED_SERVER,
     KIND_ALLOWED_USER,
     KIND_BLOCKED_SERVER,
     KIND_BLOCKED_USER,
     KIND_PROTECTED_USER,
     Decision,
+    glob_to_regex,
     InvalidPattern,
     RuleSet,
     is_catch_all,
@@ -194,3 +198,62 @@ def test_entries_lists_everything() -> None:
         (KIND_BLOCKED_USER, "@t:x.org"),
         (KIND_ALLOWED_SERVER, "x.org"),
     ]
+
+
+def test_glob_matches_matrix_common() -> None:
+    """Our stdlib glob_to_regex must behave exactly like the one Synapse uses.
+
+    `policy.py` is vendored into the maubot plugin, whose runtime has no
+    matrix-common, so we reimplement it -- and pin that to the original here.
+    """
+    from matrix_common.regex import glob_to_regex as reference
+
+    globs = [
+        "", "a", "*", "?", "??", "?*", "*?", "**", "*?*", "?**?**?",
+        "a*b", "*.x.no", "x.no", "@a:b", "@*:*", "*.*", "[*]", "\\*",
+        "EXAMPLE.ORG", "ex.org:8448", "a?c", "*-*",
+    ]
+    subjects = [
+        "", "a", "ab", "abc", "a.x.no", "x.no", "@a:b", "@bob:x.no",
+        "A.X.NO", "example.org", "ex.org:8448", "[q]", "*", "\\x",
+        "a\nb", "a\n", "\n", "a-b", "..", "?",
+    ]
+    for glob in globs:
+        ours = glob_to_regex(glob)
+        theirs = reference(glob)
+        for subject in subjects:
+            assert bool(ours.match(subject)) == bool(theirs.match(subject)), (
+                f"{glob!r} vs {subject!r}"
+            )
+
+
+# --- ReDoS guards: a pattern must never be able to hang the reactor ---------
+
+
+def test_pattern_with_many_wildcard_groups_rejected() -> None:
+    with pytest.raises(InvalidPattern, match="wildcard groups"):
+        validate_pattern(KIND_ALLOWED_SERVER, "*a*a*a*a*b")
+    with pytest.raises(InvalidPattern, match="wildcard groups"):
+        validate_pattern(KIND_BLOCKED_USER, "@*a*a*a*a*b:x.org")
+
+
+def test_ordinary_patterns_still_accepted() -> None:
+    validate_pattern(KIND_ALLOWED_SERVER, "*.skole.no")
+    validate_pattern(KIND_ALLOWED_SERVER, "venner.no")
+    validate_pattern(KIND_BLOCKED_SERVER, "*.*.*.*")
+    validate_pattern(KIND_ALLOWED_USER, "@granny*:other.org")
+
+
+def test_oversized_subject_denied_without_matching() -> None:
+    rs = build(allowed_server=["*.venner.no"])
+    started = time.perf_counter()
+    decision = rs.evaluate("@" + "a" * 300 + ":sub.venner.no")
+    assert decision == Decision(False, None)
+    assert time.perf_counter() - started < 1.0
+
+
+def test_subject_at_length_limit_still_evaluated() -> None:
+    rs = build(allowed_server=["venner.no"])
+    user = "@" + "a" * (MAX_SUBJECT_LEN - len("@:venner.no")) + ":venner.no"
+    assert len(user) == MAX_SUBJECT_LEN
+    assert rs.evaluate(user).allowed

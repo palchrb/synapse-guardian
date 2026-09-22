@@ -283,4 +283,15 @@ def test_parse_config_defaults() -> None:
     assert cfg.refresh_interval_s == 30
     assert cfg.notify_dedupe_s == 300
     assert not cfg.dry_run
+    assert cfg.watch_control_room
     assert cfg.trusted_senders == frozenset()
+
+
+def test_parse_config_watch_control_room_can_be_disabled() -> None:
+    cfg = FamilyGuardConfig.parse({"control_room": "!r:test", "watch_control_room": False})
+    assert not cfg.watch_control_room
+
+
+def test_parse_config_rejects_non_bool_watch_control_room() -> None:
+    with pytest.raises(ConfigError):
+        FamilyGuardConfig.parse({"watch_control_room": "yes"})

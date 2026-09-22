@@ -177,6 +177,19 @@ class FamilyGuardTestCase(unittest.HomeserverTestCase):
         )
         return channel.code
 
+    def add_rule(self, kind: str, entity: str, tok: str | None = None, content: dict | None = None,
+                 expect_code: int = 200) -> None:
+        # state keys may not start with "@" (auth rules) -> strip it, entity lives in content
+        self.helper.send_state(
+            self.control_room,
+            f"family_guard.{kind}",
+            {"entity": entity, "added_by": self.parent} if content is None else content,
+            tok=tok or self.parent_tok,
+            state_key=entity[1:] if entity.startswith("@") else entity,
+            expect_code=expect_code,
+        )
+        self.pump()
+
 
 class InvitesToKidTestCase(FamilyGuardTestCase):
     def test_federated_invite_from_allowed_server_ok(self) -> None:
@@ -412,19 +425,6 @@ class DenyJoinPolicyTestCase(FamilyGuardTestCase):
 
 
 class ControlRoomTestCase(FamilyGuardTestCase):
-    def add_rule(self, kind: str, entity: str, tok: str | None = None, content: dict | None = None,
-                 expect_code: int = 200) -> None:
-        # state keys may not start with "@" (auth rules) -> strip it, entity lives in content
-        self.helper.send_state(
-            self.control_room,
-            f"family_guard.{kind}",
-            {"entity": entity, "added_by": self.parent} if content is None else content,
-            tok=tok or self.parent_tok,
-            state_key=entity[1:] if entity.startswith("@") else entity,
-            expect_code=expect_code,
-        )
-        self.pump()
-
     def test_rule_added_via_state_applies_immediately(self) -> None:
         self.assert_federated_invite_blocked("@a:new.org", room_id="!a:new.org")
         self.add_rule("allowed_server", "new.org")
@@ -593,6 +593,42 @@ class ConfigTestCase(unittest.TestCase):
     def test_parse_config_ok(self) -> None:
         cfg = FamilyGuard.parse_config({"protected_users": [KID], "allowed_servers": ["test"]})
         self.assertTrue(cfg.static_rules.is_protected(KID))
+
+
+class WatchControlRoomTestCase(FamilyGuardTestCase):
+    """`on_new_event` is costly server-wide, so it is only registered when usable."""
+
+    def test_on_new_event_registered_when_watching(self) -> None:
+        callbacks = self.hs.get_module_api_callbacks().third_party_event_rules
+        self.assertIn(self.module.on_new_event, callbacks._on_new_event_callbacks)
+        self.assertTrue(self.module._watching_control_room)
+
+
+class NoWatchControlRoomTestCase(FamilyGuardTestCase):
+    CONFIG_OVERRIDES = {"watch_control_room": False}
+
+    def test_on_new_event_not_registered(self) -> None:
+        callbacks = self.hs.get_module_api_callbacks().third_party_event_rules
+        self.assertNotIn(self.module.on_new_event, callbacks._on_new_event_callbacks)
+        self.assertFalse(self.module._watching_control_room)
+
+    def test_rules_still_propagate_via_ttl(self) -> None:
+        self.add_rule("allowed_server", "new.org")
+        self.module._store._stale = False
+        self.module._store._rules = self.module._config.static_rules
+        self.assert_federated_invite_blocked("@a:new.org", room_id="!a:new.org")
+        self.module._store._loaded_at -= 31
+        self.get_success(self.federated_invite("@a:new.org", room_id="!b:new.org"))
+
+    def test_check_event_allowed_still_registered(self) -> None:
+        room_id = self.helper.create_room_as(self.kid, is_public=False, tok=self.kid_tok)
+        self.helper.send_state(
+            room_id,
+            EventTypes.JoinRules,
+            {"join_rule": JoinRules.PUBLIC},
+            tok=self.kid_tok,
+            expect_code=403,
+        )
 
 
 class ResilienceTestCase(FamilyGuardTestCase):

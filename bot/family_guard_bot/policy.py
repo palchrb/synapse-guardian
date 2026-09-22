@@ -18,9 +18,46 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Iterable, Pattern
 
-from matrix_common.regex import glob_to_regex
-
 MAX_PATTERN_LEN = 255
+
+_WILDCARD_RUN = re.compile(r"([\?\*]+)")
+
+
+def glob_to_regex(glob: str) -> Pattern[str]:
+    """Compile a Matrix glob (`*`, `?`) into an anchored, case-insensitive regex.
+
+    Behaviour is identical to `matrix_common.regex.glob_to_regex(glob)`, which
+    Synapse itself uses (asserted by `test_glob_matches_matrix_common`). It is
+    reimplemented here so this file has no dependency beyond the standard
+    library: it is vendored into the maubot plugin, whose runtime has neither
+    Synapse nor matrix-common installed.
+
+    Runs of wildcards are collapsed into a single counted repetition
+    (`?**?` -> `.{2,}`), which is what keeps matching free of the backtracking
+    cliffs a naive `.*.*.*` translation would have.
+    """
+    chunks: list[str] = []
+    for chunk in _WILDCARD_RUN.split(glob):
+        if not _WILDCARD_RUN.match(chunk):
+            chunks.append(re.escape(chunk))
+            continue
+        question_marks = chunk.count("?")
+        if "*" in chunk:
+            chunks.append(".{%d,}" % (question_marks,))
+        else:
+            chunks.append(".{%d}" % (question_marks,))
+    # `\Z` (not `$`) so a trailing newline cannot sneak past the anchor.
+    return re.compile(rf"\A({''.join(chunks)})\Z", re.IGNORECASE)
+
+# Matrix caps user IDs at 255 bytes; anything longer cannot be a real MXID.
+# Federation hands us unvalidated senders, so bound what we run regexes over.
+MAX_SUBJECT_LEN = 255
+
+# `glob_to_regex` turns each wildcard run into `.{n,}`. Several of those in one
+# pattern (`*a*a*a*a*b`) backtrack catastrophically against a long non-matching
+# subject, which would hang the (single-threaded) Synapse reactor. Real rules
+# need one or two wildcards, so cap it.
+MAX_WILDCARD_RUNS = 4
 
 KIND_PROTECTED_USER = "protected_user"
 KIND_ALLOWED_SERVER = "allowed_server"
@@ -45,6 +82,7 @@ PLURAL = {kind: kind + "s" for kind in ALL_KINDS}
 # Matrix server names: hostname or IP literal, optional port. Globs allowed.
 _SERVER_PATTERN_RE = re.compile(r"^[A-Za-z0-9.\-_*?:\[\]]+$")
 _WILDCARDS_RE = re.compile(r"[*?]")
+_WILDCARD_RUN_RE = re.compile(r"[*?]+")
 
 
 class InvalidPattern(ValueError):
@@ -124,6 +162,11 @@ def validate_pattern(kind: str, pattern: str) -> None:
         raise InvalidPattern("pattern longer than 255 characters")
     if pattern.split() != [pattern]:
         raise InvalidPattern("pattern contains whitespace")
+    if len(_WILDCARD_RUN_RE.findall(pattern)) > MAX_WILDCARD_RUNS:
+        raise InvalidPattern(
+            f"pattern has more than {MAX_WILDCARD_RUNS} wildcard groups "
+            "(risks catastrophic regex backtracking)"
+        )
     if kind in ALLOW_KINDS and is_catch_all(pattern, kind):
         raise InvalidPattern("catch-all pattern is not allowed in an allow list")
     if kind == KIND_PROTECTED_USER:
@@ -202,6 +245,9 @@ class RuleSet:
 
     def evaluate(self, other_user_id: str) -> Decision:
         """May `other_user_id` interact with a protected user?"""
+        if len(other_user_id) > MAX_SUBJECT_LEN:
+            # Not a valid MXID; deny without running any regex over it.
+            return Decision(False, None)
         try:
             server = server_of(other_user_id)
         except ValueError:
