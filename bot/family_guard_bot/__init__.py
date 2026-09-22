@@ -323,6 +323,8 @@ class FamilyGuardBot(Plugin):
                     meta.append(str(content["reason"]))
                 suffix = f" — {', '.join(meta)}" if meta else ""
                 lines.append(f"- `{entity}`{suffix}")
+        # Blank line first: Markdown would otherwise fold this into the last bullet.
+        lines.append("")
         lines.append("_Static rules from homeserver.yaml also apply and are not listed here._")
         await evt.reply("\n".join(lines))
 
