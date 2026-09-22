@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from synapse_guardian.policy import (
@@ -58,7 +58,6 @@ class GuardianConfig:
     notify_room: bool = False
     notify_user: str | None = None
     notify_dedupe_s: float = 300.0
-    trusted_senders: frozenset[str] = field(default_factory=frozenset)
     refresh_interval_s: float = 15.0
     watch_control_room: bool = False
     strict_local_events: bool = False
@@ -76,12 +75,18 @@ class GuardianConfig:
             "notify_room",
             "notify_user",
             "notify_dedupe_s",
-            "trusted_senders",
             "refresh_interval_s",
             "watch_control_room",
             "strict_local_events",
             "dry_run",
         }
+        if "trusted_senders" in cfg:
+            raise ConfigError(
+                "trusted_senders was removed in 0.5.0: the control room's power "
+                "levels now decide who may manage rules, so grant that user "
+                "power to send the guardian.* state events instead. "
+                "Delete the trusted_senders line."
+            )
         unknown = set(cfg) - known
         if unknown:
             raise ConfigError(f"unknown config keys: {sorted(unknown)}")
@@ -114,13 +119,6 @@ class GuardianConfig:
             if notify_user is None:
                 raise ConfigError("notify_room requires notify_user")
 
-        trusted = _str_list(cfg, "trusted_senders")
-        for sender in trusted:
-            if not is_user_id(sender):
-                raise ConfigError(f"trusted_senders entry is not a user ID: {sender!r}")
-        if notify_user is not None:
-            trusted.append(notify_user)
-
         return cls(
             static_rules=static_rules,
             control_room=control_room,
@@ -128,7 +126,6 @@ class GuardianConfig:
             notify_room=notify_room,
             notify_user=notify_user,
             notify_dedupe_s=_number(cfg, "notify_dedupe_s", 300),
-            trusted_senders=frozenset(s.lower() for s in trusted),
             refresh_interval_s=_number(cfg, "refresh_interval_s", 15),
             watch_control_room=_bool(cfg, "watch_control_room", False),
             strict_local_events=_bool(cfg, "strict_local_events", False),

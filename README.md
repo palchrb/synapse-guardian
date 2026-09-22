@@ -36,6 +36,22 @@ allows every `*.skole.no` server except `evil.skole.no`, and
 case-insensitive. Catch-all patterns are refused in allow lists — not just
 `*`, but anything that matches every user or server (`@*:*`, `*.*`, `?*`).
 
+## Upgrading from 0.4.x
+
+`trusted_senders` was removed. The control room's power levels now decide who
+may manage rules, which is what the room was already enforcing — and which
+fixes a room-version-12 control room silently ignoring its own creator.
+
+1. **Delete the `trusted_senders:` line** from the module config. Synapse
+   refuses to start while it is there, with a message saying so.
+2. **Check the power levels** of anyone who wrote rules by hand: they now need
+   enough power in the control room for the `guardian.*` event types (the
+   `m.room.power_levels` example below grants the bot 50). Server admins are
+   still honoured regardless, and a room-version-12 creator always is.
+3. `notify_user` no longer confers trust. It is still the account notices and
+   `guardian.effective_rules` are sent as, and still needs power to send that
+   state event.
+
 ## Upgrading from family_guard 0.3.x
 
 Everything was renamed in 0.4.0: the pip package, the Python module, the state
@@ -110,7 +126,6 @@ modules:
       notify_room: false                     # post a notice on every block
       notify_user: "@guardianbot:example.org"  # required with notify_room
       notify_dedupe_s: 300
-      trusted_senders: []                    # extra local users whose room entries count
       refresh_interval_s: 15                 # max seconds before a rule change is picked up
       watch_control_room: false            # true = instant rule updates, but costs a state load per event
       strict_local_events: false             # costs a DB state load per event; see below
@@ -124,9 +139,14 @@ modules:
   cannot see who is there).
 - `notify_user` must be a local user that is already **joined** to the control
   room — normally the maubot account. The module does not create or join users.
-- `trusted_senders`: room entries count only if their sender is a local server
-  admin, `notify_user`, or listed here. Power levels are the real gate; this is
-  a second layer.
+- **Who may write rules** is decided by the control room's own power levels: a
+  local user is honoured if they are a Synapse server admin, or if they
+  currently hold enough power there to send that `guardian.*` state event.
+  Under room version 12 the room's creator counts as having infinite power even
+  though Matrix forbids listing them in `users`. Anyone you grant that level to
+  can manage the rules — that is the point of granting it. If the power levels
+  cannot be read, only server admins are honoured, and the module says so in
+  the log. (`trusted_senders` was removed in 0.5.0; see Upgrading.)
 - `dry_run` still logs and notifies (prefixed `[dry-run]`) so you can calibrate
   before enforcing. Remember to run `scripts/reject_pending_invites.py`
   afterwards (see gaps).
@@ -216,6 +236,13 @@ the module in a worker deployment.**
 
    `guardian.effective_rules` is written by the **module** as `notify_user`
    (see below), not by you; without it the bot cannot show static rules.
+
+   These levels are also what the module trusts: from 0.5.0 a local user's
+   rules are honoured exactly when they could send that state event themselves.
+   Granting someone 50 here makes them a rule administrator — deliberately, and
+   visibly, in the room's own state. Server admins are honoured regardless, and
+   so is the room's creator under room version 12, where Matrix forbids listing
+   them in `users` at all.
 3. Invite the bot account and have it join. Disable auto-join on the maubot
    client (Manage clients → Autojoin off) so it can never be lured elsewhere.
    Use a strong maubot admin password; the maubot UI can send anything as the

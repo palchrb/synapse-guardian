@@ -155,6 +155,93 @@ def is_user_id(value: str) -> bool:
     )
 
 
+# --- room power levels ---------------------------------------------------
+#
+# Mirrors mautrix's `PowerLevelStateEventContent.get_user_level` /
+# `get_event_level` / `RoomCreateStateEventContent.supports_creator_power`
+# (mautrix/types/event/state.py:44-84,217-234), but over plain dicts, because
+# this file is vendored into the maubot plugin and must stay dependency-free.
+
+# mautrix uses an integer above the maximum power level rather than a float
+# infinity; match it so both sides compare identically.
+POWER_INFINITE = 2**60 - 1
+
+# Room versions before 12 have no implicit creator power (MSC4289).
+_NO_CREATOR_POWER_VERSIONS = frozenset(
+    ("", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11")
+)
+
+
+def supports_creator_power(create_content: object) -> bool:
+    """True if this room's version gives its creators implicit power."""
+    if not isinstance(create_content, Mapping):
+        return False
+    version = create_content.get("room_version", "1")
+    if not isinstance(version, str):
+        return False
+    return version not in _NO_CREATOR_POWER_VERSIONS
+
+
+def _int(value: object, default: int) -> int:
+    """Power levels are ints, but the room is not obliged to be well-formed."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def user_power_level(
+    power_levels: object,
+    user_id: str,
+    create_sender: str | None = None,
+    create_content: object = None,
+) -> int:
+    """`user_id`'s effective power, honouring room v12 creator power.
+
+    From room version 12 the creator -- and anyone in `additional_creators` --
+    has effectively infinite power and is *forbidden* from appearing in
+    `content.users`, so a plain lookup reports them as `users_default`.
+    """
+    if supports_creator_power(create_content):
+        assert isinstance(create_content, Mapping)
+        extra = create_content.get("additional_creators")
+        creators = {create_sender} if create_sender else set()
+        if isinstance(extra, (list, tuple)):
+            creators.update(c for c in extra if isinstance(c, str))
+        if user_id in creators:
+            return POWER_INFINITE
+    if not isinstance(power_levels, Mapping):
+        return 0
+    users = power_levels.get("users")
+    default = _int(power_levels.get("users_default"), 0)
+    if isinstance(users, Mapping) and user_id in users:
+        return _int(users[user_id], default)
+    return default
+
+
+def event_power_level(
+    power_levels: object, event_type: str, is_state: bool = True
+) -> int:
+    """Power needed to send `event_type`, matched by type string like Synapse does."""
+    if not isinstance(power_levels, Mapping):
+        return 50 if is_state else 0
+    fallback = (
+        _int(power_levels.get("state_default"), 50)
+        if is_state
+        else _int(power_levels.get("events_default"), 0)
+    )
+    events = power_levels.get("events")
+    if isinstance(events, Mapping) and event_type in events:
+        return _int(events[event_type], fallback)
+    return fallback
+
+
 def validate_pattern(kind: str, pattern: str) -> None:
     """Raise InvalidPattern if `pattern` is not acceptable for `kind`."""
     if not isinstance(pattern, str) or not pattern:

@@ -735,8 +735,8 @@ class ControlRoomTestCase(GuardianTestCase):
         self.add_rule("allowed_server", "new.org", tok=self.sibling_tok, expect_code=403)
         self.assert_federated_invite_blocked("@a:new.org", room_id="!a:new.org")
 
-    def test_state_from_trusted_but_unprivileged_user_ignored_by_module(self) -> None:
-        # Give sibling PL to send state but sibling is neither admin nor trusted.
+    def test_state_from_non_admin_with_power_is_honoured(self) -> None:
+        """The room's power levels decide, not server-admin status (0.5.0)."""
         self.helper.invite(self.control_room, self.parent, self.sibling, tok=self.parent_tok)
         self.helper.join(self.control_room, self.sibling, tok=self.sibling_tok)
         self.helper.send_state(
@@ -745,8 +745,42 @@ class ControlRoomTestCase(GuardianTestCase):
             {"users": {self.parent: 100, self.sibling: 100}, "state_default": 50},
             tok=self.parent_tok,
         )
+        self.assertFalse(
+            self.get_success(self.hs.get_datastores().main.is_server_admin(self.sibling))
+        )
         self.add_rule("allowed_server", "new.org", tok=self.sibling_tok)
-        self.assert_federated_invite_blocked("@a:new.org", room_id="!a:new.org")
+        self.get_success(self.federated_invite("@a:new.org", room_id="!a:new.org"))
+
+    def test_v12_room_creator_is_honoured(self) -> None:
+        """The production regression: a v12 creator is absent from `users`.
+
+        Room version 12 gives creators implicit infinite power and *forbids*
+        listing them in `m.room.power_levels.users`, so a plain lookup reports
+        them as `users_default` and the module used to ignore their rules.
+        """
+        # sibling, deliberately NOT a server admin, so only creator power can
+        # explain the rule being honoured.
+        self.assertFalse(
+            self.get_success(self.hs.get_datastores().main.is_server_admin(self.sibling))
+        )
+        room = self.helper.create_room_as(
+            self.sibling,
+            is_public=False,
+            tok=self.sibling_tok,
+            room_version="12",
+        )
+        self.module._store.control_room = room
+        levels = self.helper.get_state(room, EventTypes.PowerLevels, tok=self.sibling_tok)
+        self.assertNotIn(self.sibling, levels.get("users", {}))
+        self.helper.send_state(
+            room,
+            "guardian.allowed_server",
+            {"entity": "new.org"},
+            tok=self.sibling_tok,
+            state_key="new.org",
+        )
+        self.force_refresh()
+        self.get_success(self.federated_invite("@a:new.org", room_id="!a:new.org"))
 
     def test_invalid_state_entries_ignored(self) -> None:
         self.add_rule("allowed_server", "*")  # catch-all: skipped

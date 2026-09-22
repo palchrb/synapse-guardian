@@ -17,7 +17,7 @@ from typing import Any
 
 from maubot import MessageEvent, Plugin
 from maubot.handlers import command
-from mautrix.types import EventType, PowerLevelStateEventContent, RoomID, StateEvent
+from mautrix.types import EventType, RoomID, StateEvent
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 
 # vendored copy of synapse_guardian/policy.py (see `make bot-build`)
@@ -29,7 +29,9 @@ from .policy import (
     KIND_PROTECTED_USER,
     InvalidPattern,
     RuleSet,
+    event_power_level,
     is_user_id,
+    user_power_level,
     validate_pattern,
 )
 
@@ -188,51 +190,37 @@ def static_extra_lines(payload: dict[str, Any] | None, shown: set[tuple[str, str
     return lines
 
 
-def power_levels_and_create(
-    state: list[StateEvent],
-) -> tuple[PowerLevelStateEventContent, StateEvent | None]:
-    """Pick the power levels content and the create event out of a room's state."""
-    pl: PowerLevelStateEventContent | None = None
-    create: StateEvent | None = None
-    for event in state:
-        if event.type == EventType.ROOM_POWER_LEVELS:
-            content = event.content
-            if isinstance(content, PowerLevelStateEventContent):
-                pl = content
-        elif event.type == EventType.ROOM_CREATE:
-            create = event
-    return pl or PowerLevelStateEventContent(), create
+class RoomAuthority:
+    """The room's power levels, read the same way the module reads them.
 
-
-def event_level(pl: PowerLevelStateEventContent, event_type: EventType) -> int:
-    """Power needed to send `event_type`, matched by type string like the server does.
-
-    mautrix keys `content.events` by `EventType`, and equality includes the
-    type *class*. Deserialising an unknown type yields `Class.UNKNOWN` while we
-    look up with `Class.STATE`, so a typed lookup misses our own entries and
-    falls back to `state_default`. Synapse matches on the raw string, so a
-    typed lookup would make the bot stricter than the room actually is.
+    The arithmetic lives in `policy.py` so the bot and the module can never
+    disagree about who may change a rule; this only unwraps mautrix objects
+    into the plain dicts that module shares.
     """
-    for known, level in pl.events.items():
-        if getattr(known, "t", known) == event_type.t:
-            return int(level)
-    return int(pl.state_default if event_type.is_state else pl.events_default)
 
+    def __init__(self, power_levels: dict[str, Any], create: StateEvent | None) -> None:
+        self._power_levels = power_levels
+        self._create_sender = str(create.sender) if create is not None else None
+        self._create_content = _content_dict(create.content) if create is not None else None
 
-def user_level(
-    pl: PowerLevelStateEventContent, create: StateEvent | None, user_id: str
-) -> int:
-    """Effective power level, honouring room v12 creator power.
+    @classmethod
+    def from_state(cls, state: list[StateEvent]) -> "RoomAuthority":
+        power_levels: dict[str, Any] = {}
+        create: StateEvent | None = None
+        for event in state:
+            if event.type == EventType.ROOM_POWER_LEVELS:
+                power_levels = _content_dict(event.content)
+            elif event.type == EventType.ROOM_CREATE:
+                create = event
+        return cls(power_levels, create)
 
-    From room version 12 on, the creator (and anyone in `additional_creators`)
-    has effectively infinite power and is *forbidden* from appearing in
-    `content.users`, so a plain `users` lookup reports them as `users_default`
-    -- usually 0. mautrix knows this, but only when handed the create event.
-    """
-    try:
-        return pl.get_user_level(user_id, create)
-    except TypeError:  # mautrix too old to know about creator power
-        return pl.get_user_level(user_id)
+    def power_of(self, user_id: str) -> int:
+        return user_power_level(
+            self._power_levels, user_id, self._create_sender, self._create_content
+        )
+
+    def needed_for(self, event_type: EventType) -> int:
+        return event_power_level(self._power_levels, event_type.t, event_type.is_state)
 
 
 class GuardianBot(Plugin):
@@ -273,9 +261,9 @@ class GuardianBot(Plugin):
         except Exception as e:  # noqa: BLE001
             await evt.reply(f"Could not read room state: {e}")
             return False
-        pl, create = power_levels_and_create(state)
-        needed = event_level(pl, event_type_for(kind))
-        have = user_level(pl, create, evt.sender)
+        authority = RoomAuthority.from_state(state)
+        needed = authority.needed_for(event_type_for(kind))
+        have = authority.power_of(evt.sender)
         if have < needed:
             await evt.reply(
                 f"You cannot send this state event yourself (need PL {needed}, you have {have}), "

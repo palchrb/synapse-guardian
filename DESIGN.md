@@ -76,10 +76,30 @@ Only state events whose `sender` is a *local* user are honoured (defence in
 depth beyond power levels). Entries are validated (MXID / server name / glob);
 invalid ones are logged and skipped, never fatal.
 
-Trust: a control-room state event is honoured only if its `sender` is a local
-user AND (is a server admin per `module_api.is_user_admin`, or is listed in
-`trusted_senders`, which defaults to `[notify_user]`). Power levels are the
-real gate; this is a cheap second layer.
+Trust: a control-room state event is honoured if its `sender` is a local user
+AND (is a server admin per `module_api.is_user_admin`, OR currently holds
+enough power in the control room to send that event type).
+
+The room's power levels are the authority, because Synapse already refused to
+persist the event otherwise — a second, independent notion of trust could only
+ever reject someone the room had allowed. It did exactly that in production:
+the control room's creator, who under room version 12 has implicit infinite
+power and is *forbidden* from appearing in `m.room.power_levels.users`, was
+read as `users_default` (0) and had their hand-written rule silently dropped.
+
+Required level for a type is `content.events[<type>]`, else `state_default`,
+else 50, matched by the raw type **string** exactly as Synapse matches it.
+Sender level is `users[<sender>]`, else `users_default`, else 0 — except that
+with MSC4289 creator power (room version 12+) the create event's `sender` and
+everyone in `content.additional_creators` count as infinite. The arithmetic
+lives in `policy.py` over plain dicts so the module and the maubot plugin
+cannot drift apart. If the power levels cannot be read, only server admins are
+honoured, and that is logged.
+
+`trusted_senders` was removed in 0.5.0: the power-level check subsumes it.
+`notify_user` is still who we post notices and `guardian.effective_rules` as —
+it no longer confers any trust, and does not need to, since the README already
+has you grant it power in the room.
 
 ## Cache & invalidation
 
@@ -203,7 +223,6 @@ modules:
       notify_room: false
       notify_user: "@guardianbot:example.org"   # required if notify_room; must be joined to control_room
       notify_dedupe_s: 300
-      trusted_senders: []                  # extra local senders trusted in control_room (admins + notify_user always)
       refresh_interval_s: 30
       dry_run: false
 ```

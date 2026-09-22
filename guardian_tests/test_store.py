@@ -41,6 +41,18 @@ class FakeApi:
             k: v for k, v in self.state.items() if wanted is None or k[0] in wanted
         }
 
+    def set_power_levels(self, **content: Any) -> None:
+        content.setdefault("state_default", 50)
+        self.state[("m.room.power_levels", "")] = SimpleNamespace(
+            type="m.room.power_levels", state_key="", sender=ADMIN, content=content
+        )
+
+    def set_create(self, sender: str = ADMIN, **content: Any) -> None:
+        content.setdefault("room_version", "12")
+        self.state[("m.room.create", "")] = SimpleNamespace(
+            type="m.room.create", state_key="", sender=sender, content=content
+        )
+
     def put(self, kind: str, key: str, sender: str = ADMIN, content: dict | None = None) -> None:
         if content is None:
             content = {"entity": key, "added_by": sender}
@@ -130,19 +142,108 @@ def test_admin_sender_honoured() -> None:
     assert run(make_store(api).get_rules()).evaluate("@a:friends.org").allowed
 
 
-def test_notify_user_and_trusted_senders_honoured() -> None:
+def test_sender_with_enough_power_is_honoured() -> None:
+    """The room decides: PL 50 is what the room asks for, so PL 50 is enough."""
     api = FakeApi()
+    api.set_power_levels(users={BOT: 50}, users_default=0, state_default=50)
     api.put("allowed_server", "friends.org", sender=BOT)
-    api.put("allowed_server", "other.org", sender="@helper:example.org")
-    store = make_store(
-        api,
-        notify_room=True,
-        notify_user=BOT,
-        trusted_senders=["@helper:example.org"],
+    assert run(make_store(api).get_rules()).evaluate("@a:friends.org").allowed
+
+
+def test_sender_without_enough_power_is_ignored(caplog: pytest.LogCaptureFixture) -> None:
+    api = FakeApi()
+    api.set_power_levels(users={BOT: 50}, users_default=0, state_default=50)
+    api.put("allowed_server", "friends.org", sender="@random:example.org")
+    with caplog.at_level(logging.WARNING, logger="synapse_guardian.store"):
+        rules = run(make_store(api).get_rules())
+    assert not rules.evaluate("@a:friends.org").allowed
+    assert any(
+        "power 0, needs 50 for guardian.allowed_server" in r.getMessage()
+        for r in caplog.records
     )
-    rules = run(store.get_rules())
-    assert rules.evaluate("@a:friends.org").allowed
-    assert rules.evaluate("@a:other.org").allowed
+
+
+def test_v12_room_creator_is_honoured() -> None:
+    """The regression: a v12 creator has infinite power and is absent from `users`."""
+    creator = "@creator:example.org"
+    api = FakeApi()
+    api.set_create(sender=creator, room_version="12")
+    api.set_power_levels(users={BOT: 50}, users_default=0, state_default=100)
+    api.put("allowed_server", "friends.org", sender=creator)
+    assert run(make_store(api).get_rules()).evaluate("@a:friends.org").allowed
+
+
+def test_additional_creator_is_honoured() -> None:
+    extra = "@second:example.org"
+    api = FakeApi()
+    api.set_create(sender=ADMIN, room_version="12", additional_creators=[extra])
+    api.set_power_levels(users={}, users_default=0, state_default=100)
+    api.put("allowed_server", "friends.org", sender=extra)
+    assert run(make_store(api).get_rules()).evaluate("@a:friends.org").allowed
+
+
+def test_pre_v12_creator_has_no_implicit_power() -> None:
+    creator = "@creator:example.org"
+    api = FakeApi()
+    api.set_create(sender=creator, room_version="10")
+    api.set_power_levels(users={BOT: 50}, users_default=0, state_default=50)
+    api.put("allowed_server", "friends.org", sender=creator)
+    assert not run(make_store(api).get_rules()).evaluate("@a:friends.org").allowed
+
+
+def test_per_type_events_entry_lowers_the_bar() -> None:
+    api = FakeApi()
+    api.set_power_levels(
+        users={BOT: 50},
+        users_default=0,
+        state_default=100,
+        events={"guardian.allowed_server": 50},
+    )
+    api.put("allowed_server", "friends.org", sender=BOT)
+    assert run(make_store(api).get_rules()).evaluate("@a:friends.org").allowed
+
+
+def test_per_type_events_entry_raises_the_bar() -> None:
+    api = FakeApi()
+    api.set_power_levels(
+        users={BOT: 50},
+        users_default=0,
+        state_default=50,
+        events={"guardian.allowed_server": 100},
+    )
+    api.put("allowed_server", "friends.org", sender=BOT)
+    assert not run(make_store(api).get_rules()).evaluate("@a:friends.org").allowed
+
+
+def test_server_admin_is_honoured_without_power() -> None:
+    api = FakeApi()
+    api.set_power_levels(users={}, users_default=0, state_default=100)
+    api.put("allowed_server", "friends.org", sender=ADMIN)
+    assert run(make_store(api).get_rules()).evaluate("@a:friends.org").allowed
+
+
+def test_unreadable_power_levels_falls_back_to_admins(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    api = FakeApi()  # no m.room.power_levels at all
+    api.put("allowed_server", "friends.org", sender=BOT)
+    api.put("allowed_server", "admin.org", sender=ADMIN)
+    with caplog.at_level(logging.WARNING, logger="synapse_guardian.store"):
+        rules = run(make_store(api).get_rules())
+    assert not rules.evaluate("@a:friends.org").allowed
+    assert rules.evaluate("@a:admin.org").allowed
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("only server admins may manage rules" in m for m in messages)
+    assert any("power levels unreadable" in m for m in messages)
+
+
+def test_notify_user_confers_no_trust() -> None:
+    """notify_user is who we post as, not who may write rules (0.5.0)."""
+    api = FakeApi()
+    api.set_power_levels(users={}, users_default=0, state_default=50)
+    api.put("allowed_server", "friends.org", sender=BOT)
+    store = make_store(api, notify_room=True, notify_user=BOT)
+    assert not run(store.get_rules()).evaluate("@a:friends.org").allowed
 
 
 def test_invalid_state_key_skipped_logged(caplog: pytest.LogCaptureFixture) -> None:
@@ -277,6 +378,14 @@ def test_parse_config_rejects_unknown_keys() -> None:
         GuardianConfig.parse({"protected": []})
 
 
+def test_parse_config_rejects_removed_trusted_senders() -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        GuardianConfig.parse({"trusted_senders": ["@a:example.org"]})
+    message = str(excinfo.value)
+    assert "removed in 0.5.0" in message
+    assert "power levels" in message
+
+
 def test_parse_config_defaults() -> None:
     cfg = GuardianConfig.parse(None)
     assert cfg.uninvited_joins == "known_rooms"
@@ -286,7 +395,6 @@ def test_parse_config_defaults() -> None:
     # Off by default: registering on_new_event makes Synapse load the room's
     # full current state for every persisted event, server-wide.
     assert not cfg.watch_control_room
-    assert cfg.trusted_senders == frozenset()
 
 
 def test_parse_config_watch_control_room_can_be_enabled() -> None:
