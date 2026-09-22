@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from typing import Any, Awaitable, Callable, Protocol
 
 from family_guard.config import FamilyGuardConfig
@@ -104,8 +105,8 @@ class PolicyStore:
             if kind is None:
                 continue
             content = event.content
-            if not isinstance(content, dict) or not content:
-                continue  # empty content = removed
+            if not isinstance(content, Mapping) or not content:
+                continue  # empty content = removed (Rust-backed events are Mappings, not dicts)
             sender = event.sender
             if sender not in trust_cache:
                 trust_cache[sender] = await self._is_trusted(sender)
@@ -118,7 +119,16 @@ class PolicyStore:
                     sender,
                 )
                 continue
-            entries.append((kind, state_key))
+            # The entity lives in content["entity"]; state keys cannot start with
+            # "@" unless the sender is that user (auth rules), so the bot writes
+            # user entities without the leading "@" in the state key.
+            entity = content.get("entity", state_key)
+            if not isinstance(entity, str):
+                logger.warning(
+                    "family_guard: ignoring %s %r in %s: entity is not a string", kind, state_key, room_id
+                )
+                continue
+            entries.append((kind, entity))
 
         def on_invalid(kind: str, pattern: str, error: str) -> None:
             logger.warning(

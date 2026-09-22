@@ -43,9 +43,10 @@ class FakeApi:
 
     def put(self, kind: str, key: str, sender: str = ADMIN, content: dict | None = None) -> None:
         if content is None:
-            content = {"added_by": sender}
-        self.state[("family_guard." + kind, key)] = SimpleNamespace(
-            type="family_guard." + kind, state_key=key, sender=sender, content=content
+            content = {"entity": key, "added_by": sender}
+        state_key = key[1:] if key.startswith("@") else key
+        self.state[("family_guard." + kind, state_key)] = SimpleNamespace(
+            type="family_guard." + kind, state_key=state_key, sender=sender, content=content
         )
 
 
@@ -156,6 +157,15 @@ def test_invalid_state_key_skipped_logged(caplog: pytest.LogCaptureFixture) -> N
     assert not rules.evaluate("@a:anything.org").allowed
     assert rules.protected_users == frozenset()
     assert sum("ignoring invalid" in r.message for r in caplog.records) == 3
+
+
+def test_entity_falls_back_to_state_key_and_rejects_non_string() -> None:
+    api = FakeApi()
+    api.put("allowed_server", "friends.org", content={"added_by": ADMIN})  # no entity
+    api.put("allowed_server", "other.org", content={"entity": 42})
+    rules = run(make_store(api).get_rules())
+    assert rules.evaluate("@a:friends.org").allowed
+    assert not rules.evaluate("@a:other.org").allowed
 
 
 def test_unknown_event_types_ignored() -> None:
