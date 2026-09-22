@@ -135,7 +135,9 @@ Verified against Synapse 1.161 source (`synapse/handlers/room_member.py`,
 `synapse/handlers/federation.py`). [`docs/callbacks.md`](docs/callbacks.md)
 holds the full inventory — every callback, its dispatcher cost, admin bypasses,
 and the reasoning for using or avoiding it — pinned by
-`guardian_tests/test_synapse_contract.py`:
+`guardian_tests/test_synapse_contract.py`, and
+[`docs/workers.md`](docs/workers.md) covers what each of our actions does when
+every worker runs the module at once:
 
 | callback                       | logic                                                                                                   |
 |--------------------------------|---------------------------------------------------------------------------------------------------------|

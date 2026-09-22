@@ -153,3 +153,82 @@ def test_bare_codes_return_is_still_normalised_by_the_dispatcher() -> None:
         "The dispatcher no longer normalises a bare Codes return value. "
         f"Guardian._block returns one. See {DOC}."
     )
+
+
+# --- assumptions recorded in docs/workers.md --------------------------------
+
+WORKERS_DOC = "docs/workers.md"
+
+
+def test_replication_client_still_retries_connect_errors_then_gives_up() -> None:
+    """Our start-up retry ladder is layered on top of this one.
+
+    A worker's write reaches the event persister over the replication HTTP API,
+    which is not listening in the first seconds after start-up.
+    """
+    from synapse.replication.http._base import ReplicationEndpoint
+
+    assert ReplicationEndpoint.RETRY_ON_CONNECT_ERROR is True, (
+        "The replication client no longer retries connection errors; the "
+        f"start-up publish would fail on the first attempt. See {WORKERS_DOC}."
+    )
+    assert ReplicationEndpoint.RETRY_ON_CONNECT_ERROR_ATTEMPTS == 5, (
+        "The replication connect-error retry count changed, so the ~63s a "
+        "single publish attempt can take before failing is no longer accurate. "
+        f"See {WORKERS_DOC}."
+    )
+
+
+def test_state_events_are_still_deduplicated_by_whole_content() -> None:
+    """This is what stops a duplicate `guardian.effective_rules` being persisted.
+
+    It compares the entire content, which is why the payload must not carry a
+    moving timestamp.
+    """
+    from synapse.handlers.message import EventCreationHandler
+
+    source = inspect.getsource(EventCreationHandler.deduplicate_state_event)
+    assert "encode_canonical_json" in source, (
+        "Synapse no longer compares state-event content to deduplicate. Our "
+        f"published rule set could be written twice. See {WORKERS_DOC}."
+    )
+    caller = inspect.getsource(EventCreationHandler.handle_new_client_event)
+    assert "deduplicate_state_event" in caller, (
+        "handle_new_client_event no longer deduplicates state events. "
+        f"See {WORKERS_DOC}."
+    )
+
+
+def test_delayed_background_call_is_still_ungated_across_processes() -> None:
+    """Unlike `looping_background_call`, it fires wherever it was scheduled.
+
+    That is why the warm-up has to be gated on being the main process instead
+    of relying on Synapse to do it for us.
+    """
+    delayed = inspect.signature(ModuleApi.delayed_background_call)
+    looping = inspect.signature(ModuleApi.looping_background_call)
+    assert "run_on_all_instances" not in delayed.parameters, (
+        "delayed_background_call grew instance gating; the warm-up's manual "
+        f"worker_app check may now be redundant or wrong. See {WORKERS_DOC}."
+    )
+    assert "run_on_all_instances" in looping.parameters, (
+        "looping_background_call lost its instance gating; the contrast "
+        f"{WORKERS_DOC} draws between the two no longer holds."
+    )
+
+
+def test_module_api_still_exposes_worker_app() -> None:
+    """The publisher is gated on this being None (the main process)."""
+    assert isinstance(ModuleApi.worker_app, property), (
+        "ModuleApi.worker_app is no longer a property; the publisher's "
+        f"main-process gate in module.py would silently stop working. See {WORKERS_DOC}."
+    )
+
+
+def test_module_sent_events_are_still_created_without_ratelimiting() -> None:
+    """Notices and the published rule set must not be rate limited."""
+    source = inspect.getsource(ModuleApi.create_and_send_event_into_room)
+    assert "ratelimit=False" in source, (
+        "create_and_send_event_into_room now rate limits; a burst of blocks "
+        f"could start dropping notices. See {WORKERS_DOC}."
+    )

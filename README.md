@@ -386,3 +386,7 @@ avoid each. The upstream docs cover none of that. It is pinned by
 `guardian_tests/test_synapse_contract.py` — **after upgrading Synapse, run
 `make test-unit`**, which fails with an actionable message if an assumption in
 that document stopped holding.
+
+[`docs/workers.md`](docs/workers.md) is the companion for worker deployments: a
+table of every action this module takes, which processes take it, and what
+happens when they all do it at once.
