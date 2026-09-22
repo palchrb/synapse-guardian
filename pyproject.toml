@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 license = { text = "AGPL-3.0-or-later" }
 authors = [{ name = "palchrb" }]
 dependencies = [
-    "matrix-common>=1.3.0",
+    "matrix-common>=1.3.0,<2.0.0",  # match Synapse's own bound so pip can never upgrade it out from under Synapse
 ]
 
 [project.optional-dependencies]
