@@ -31,4 +31,4 @@ packages = ["family_guard"]
 
 [tool.pytest.ini_options]
 testpaths = ["family_guard_tests"]
-addopts = "-q"
+addopts = "-q -p no:maubot"  # maubot (optional bot extra) registers a pytest plugin needing pytest-asyncio

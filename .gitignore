@@ -8,3 +8,4 @@ build/
 _trial_temp/
 .mypy_cache/
 .synapse-tests/
+bot/*.mbp

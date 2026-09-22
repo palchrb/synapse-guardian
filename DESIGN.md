@@ -59,15 +59,18 @@ Two sources, merged as a union:
 - **Control room** (optional, `control_room: "!id:server"`): state events, one
   per entry. Must be a local room. Read via `module_api.get_room_state`.
 
-Control-room state events (`state_key` = entity, empty `content` = removed):
+Control-room state events, one per entry, empty `content` = removed. The
+entity lives in `content.entity` (fallback: the state key). State keys may not
+start with `@` unless the sender is that user (auth rules), so user entities
+are written with the `@` stripped from the state key:
 
-| type                          | state_key                | content                       |
-|-------------------------------|--------------------------|-------------------------------|
-| `family_guard.protected_user` | `@kid:example.org`       | `{reason?, added_by?, ts?}`   |
-| `family_guard.allowed_server` | `friends.org` / `*.x.no` | same                          |
-| `family_guard.allowed_user`   | `@granny:other.org`      | same                          |
-| `family_guard.blocked_user`   | `@troll:friends.org`     | same                          |
-| `family_guard.blocked_server` | `bad.x.no`               | same                          |
+| type                          | state_key                | content                                              |
+|-------------------------------|--------------------------|------------------------------------------------------|
+| `family_guard.protected_user` | `kid:example.org`        | `{entity: "@kid:example.org", added_by, ts, reason?}` |
+| `family_guard.allowed_server` | `friends.org` / `*.x.no` | `{entity: "friends.org", ...}`                       |
+| `family_guard.allowed_user`   | `granny:other.org`       | `{entity: "@granny:other.org", ...}`                 |
+| `family_guard.blocked_user`   | `troll:friends.org`      | `{entity: "@troll:friends.org", ...}`                |
+| `family_guard.blocked_server` | `bad.x.no`               | `{entity: "bad.x.no", ...}`                          |
 
 Only state events whose `sender` is a *local* user are honoured (defence in
 depth beyond power levels). Entries are validated (MXID / server name / glob);
@@ -108,7 +111,7 @@ Verified against Synapse 1.161 source (`synapse/handlers/room_member.py`,
 | callback                       | logic                                                                                                   |
 |--------------------------------|---------------------------------------------------------------------------------------------------------|
 | `federated_user_may_invite(ev)`| Inbound federated invites (the ONLY hook for those in 1.161). invitee=`ev.state_key`. If protected and `ev.sender` not allowed → FORBIDDEN. |
-| `user_may_invite(i, t, room)`  | Local invites only (skipped for server admins). If `t` protected and `i` not allowed → FORBIDDEN. If `i` protected and `t` not allowed → FORBIDDEN. |
+| `user_may_invite(i, t, room)`  | Local invites (skipped for server admins) — and, via Synapse's spam-checker dispatcher, also run for federated invites right after `federated_user_may_invite` (verified in `spamchecker_callbacks.py`). If `t` protected and `i` not allowed → FORBIDDEN. If `i` protected and `t` not allowed → FORBIDDEN. |
 | `user_may_send_3pid_invite`    | If inviter protected → FORBIDDEN.                                                                       |
 | `user_may_join_room(u, r, inv)`| Called for local *and* remote joins (alias / `via`), skipped for server admins and room creation. If `u` protected: `inv` → allow. Else apply `uninvited_joins` policy (below). |
 | `user_may_publish_room(u, room)`| If `u` protected → FORBIDDEN (no publishing rooms to the directory).                                    |
@@ -155,6 +158,11 @@ Every block is logged at INFO: `family_guard: blocked <action> <who> -> <whom>
 room=<id> reason=<rule|default-deny>`.
 
 ## Notifications
+
+Notices go through a small `Notifier` interface (`family_guard/notify.py`:
+`notify(kind, actor, target, room_id, rule, dry_run)` + `message(text)`) so a
+webhook transport to the bot (`notify_via: bot`, phase 2) can be dropped in.
+v1 implements `RoomNotifier` and `NullNotifier`.
 
 `notify_room: true` posts an `m.notice` into `control_room` for each block via
 `module_api.create_and_send_event_into_room` as `notify_user`. That API
@@ -209,8 +217,16 @@ Commands, only honoured in `control_room` from users with PL ≥ `state_default`
 ```
 
 The bot writes/clears state events in the control room. It shares `policy.py`
-with the module (vendored copy or same package) so `!fg check` matches the
-module bit for bit.
+with the module (vendored copy via `make bot-build`) so `!fg check` matches
+the module bit for bit.
+
+Hardening (the bot never grants a right the sender lacks in the room):
+`control_room` required, commands elsewhere ignored silently; before any
+mutation the bot reads `m.room.power_levels` and requires the sender's PL ≥
+the level needed for that state event type; optional `admins` list; every
+entry records `added_by` and `ts`; only local users can be protected and the
+sender cannot protect themselves; catch-all globs refused. Maubot autojoin must
+be off (README).
 
 ## Repository layout
 

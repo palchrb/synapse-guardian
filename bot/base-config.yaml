@@ -1,0 +1,7 @@
+# Room ID of the family_guard control room. Required. Commands sent anywhere
+# else are ignored without a reply.
+control_room: "!changeme:example.org"
+
+# Optional: if non-empty, only these users may run mutating commands, in
+# addition to needing the power level to send the state event themselves.
+admins: []
