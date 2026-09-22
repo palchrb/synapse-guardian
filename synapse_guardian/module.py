@@ -21,6 +21,10 @@ from synapse_guardian.store import PolicyStore
 
 logger = logging.getLogger(__name__)
 
+# Start-up publish retries: replication endpoints may not be listening yet.
+WARM_UP_ATTEMPTS = 5
+WARM_UP_RETRY_MS = 10_000
+
 # kinds used in log lines / notices
 INVITE_IN = "invite"
 INVITE_OUT = "invite-out"
@@ -98,7 +102,7 @@ class Guardian:
         # blind to the static rules. Warm up shortly after start-up instead.
         if config.control_room is not None:
             api.delayed_background_call(
-                100, self._warm_up, desc="guardian_warm_up"
+                5_000, self._warm_up, desc="guardian_warm_up"
             )
         logger.info(
             "guardian: loaded (control_room=%s, watching=%s, strict_local_events=%s, "
@@ -110,12 +114,44 @@ class Guardian:
             config.dry_run,
         )
 
-    async def _warm_up(self) -> None:
-        """Load the rules once at start-up so they are published without traffic."""
+    async def _warm_up(self, attempt: int = 1) -> None:
+        """Load the rules once at start-up so they are published without traffic.
+
+        On a worker deployment `create_and_send_event_into_room` goes over the
+        replication HTTP API, which is not listening yet in the first seconds
+        after start-up ("connection refused"). Retry with backoff rather than
+        leaving the control room without `guardian.effective_rules` until the
+        next rule change.
+        """
         try:
-            await self._store.get_rules()
+            rules = await self._store.get_rules()
         except Exception:
             logger.exception("guardian: initial rule load failed")
+            return
+        if self._publisher is None:
+            return
+        try:
+            published = await self._publisher.publish(
+                self._config.static_rules,
+                rules,
+                self._config.dry_run,
+                self._config.uninvited_joins,
+            )
+        except Exception:
+            logger.exception("guardian: initial publish failed")
+            published = False
+        if published or attempt >= WARM_UP_ATTEMPTS:
+            return
+        delay_ms = WARM_UP_RETRY_MS * attempt
+        logger.info(
+            "guardian: could not publish at start-up (attempt %d/%d); retrying in %.0fs",
+            attempt,
+            WARM_UP_ATTEMPTS,
+            delay_ms / 1000,
+        )
+        self._api.delayed_background_call(
+            delay_ms, self._warm_up, attempt + 1, desc="guardian_warm_up"
+        )
 
     @staticmethod
     def parse_config(config: dict[str, Any] | None) -> GuardianConfig:

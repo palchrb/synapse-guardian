@@ -630,6 +630,30 @@ class WarmUpTestCase(GuardianTestCase):
     def test_rules_are_loaded_without_any_traffic(self) -> None:
         self.assertIsNotNone(self.module._store.cached)
 
+    def test_warm_up_retries_when_the_publish_fails(self) -> None:
+        """Workers refuse replication connections for the first seconds."""
+        self.grant_bot_state_power()
+        self.module._store.invalidate()
+        publisher = self.module._publisher
+        assert publisher is not None
+        calls: list[int] = []
+        real = publisher.publish
+
+        async def flaky(*args: Any, **kwargs: Any) -> bool:
+            calls.append(1)
+            if len(calls) == 1:
+                raise ConnectionRefusedError("replication not up yet")
+            return await real(*args, **kwargs)
+
+        publisher.publish = flaky  # type: ignore[method-assign]
+        self.get_success(self.module._warm_up())
+        self.pump(60)
+        self.assertGreaterEqual(len(calls), 2)
+        state = self.get_success(
+            self.hs.get_storage_controllers().state.get_current_state(self.control_room)
+        )
+        self.assertIn(("guardian.effective_rules", ""), state)
+
     def test_warm_up_publishes_the_effective_rules(self) -> None:
         """The warm-up feeds the publisher, so a quiet server still tells the room.
 

@@ -51,7 +51,8 @@ class RoomPublisher:
 
     async def publish(
         self, static: RuleSet, effective: RuleSet, dry_run: bool, uninvited_joins: str
-    ) -> None:
+    ) -> bool:
+        """Publish if the payload changed. False means the send failed."""
         payload = {
             "static": static.to_payload(),
             "effective": effective.to_payload(),
@@ -63,7 +64,7 @@ class RoomPublisher:
             self._last = await self._published()
             self._primed = True
         if self._last == payload:
-            return
+            return True
         try:
             await self._api.create_and_send_event_into_room(
                 {
@@ -88,9 +89,10 @@ class RoomPublisher:
                     e,
                     EFFECTIVE_RULES_TYPE,
                 )
-            return
+            return False
         self._warned = False
         self._last = payload
+        return True
 
     async def _published(self) -> dict[str, Any] | None:
         """The payload currently in the room, or None if absent/unreadable."""
