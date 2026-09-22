@@ -7,6 +7,7 @@ users and open for everyone else.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from synapse.module_api import NOT_SPAM, EventBase, ModuleApi
@@ -28,6 +29,7 @@ PUBLISH = "publish"
 KNOCK = "knock"
 JOIN_RULES = "join_rules"
 CANONICAL_ALIAS = "canonical_alias"
+ALIAS = "alias"
 
 
 class FamilyGuard:
@@ -50,6 +52,8 @@ class FamilyGuard:
             user_may_send_3pid_invite=self.user_may_send_3pid_invite,
             user_may_join_room=self.user_may_join_room,
             user_may_publish_room=self.user_may_publish_room,
+            user_may_create_room_alias=self.user_may_create_room_alias,
+            user_may_send_state_event=self.user_may_send_state_event,
         )
         # `on_new_event` is only useful when there is a control room to watch, and
         # it is expensive: Synapse fetches the event *and the room's full current
@@ -61,11 +65,14 @@ class FamilyGuard:
         # load the room's previous state from the database before *every* local
         # event creation and every inbound federated event
         # (third_party_event_rules_callbacks.py:276-284, called from
-        # handlers/message.py:1437 and handlers/federation_event.py:455). The
-        # three goals (invite in, invite out, join) are all enforced by
-        # spam-checker callbacks, which carry no such cost; this one only adds
-        # the extras (local knocks, opening up join rules, aliases), so it is
-        # opt-in.
+        # handlers/message.py:1437 and handlers/federation_event.py:455).
+        #
+        # Nearly everything it gave us is covered for free by the dedicated spam
+        # checker callbacks registered above: `user_may_send_state_event` sees
+        # join-rule and canonical-alias changes made through the client API
+        # (rest/client/room.py:322), and `user_may_create_room_alias` sees
+        # directory aliases. What is left is local knocks and state set during
+        # `createRoom` itself, so this stays opt-in.
         callbacks: dict[str, Any] = {}
         if config.strict_local_events:
             callbacks["check_event_allowed"] = self.check_event_allowed
@@ -210,6 +217,45 @@ class FamilyGuard:
             if not decision.allowed:
                 return f"member {member} not allowed ({decision.reason})"
         return None
+
+    async def user_may_create_room_alias(self, user_id: str, room_alias: Any) -> Any:
+        """Protected users may not give their rooms a published alias."""
+        try:
+            rules = await self._rules()
+            if rules.is_protected(user_id):
+                return self._block(
+                    ALIAS, user_id, str(room_alias), None, "aliases-disabled"
+                )
+            return NOT_SPAM
+        except Exception:
+            logger.exception("family_guard: user_may_create_room_alias failed")
+            return await self._fail_closed_if_protected(user_id)
+
+    async def user_may_send_state_event(
+        self, user_id: str, room_id: str, event_type: str, state_key: str, content: Any
+    ) -> Any:
+        """Stop protected users opening up a room they can send state in.
+
+        Cheap counterpart to `check_event_allowed`: Synapse calls this only for
+        `PUT /rooms/{id}/state/...`, with no state lookup of its own.
+        """
+        try:
+            if event_type == "m.room.join_rules":
+                join_rule = content.get("join_rule") if isinstance(content, Mapping) else None
+                if join_rule == "invite":
+                    return NOT_SPAM
+                kind = JOIN_RULES
+            elif event_type == "m.room.canonical_alias":
+                kind = CANONICAL_ALIAS
+            else:
+                return NOT_SPAM
+            rules = await self._rules()
+            if not rules.is_protected(user_id):
+                return NOT_SPAM
+            return self._block(kind, user_id, room_id, room_id, f"{kind}-disabled")
+        except Exception:
+            logger.exception("family_guard: user_may_send_state_event failed")
+            return await self._fail_closed_if_protected(user_id)
 
     async def user_may_publish_room(self, user_id: str, room_id: str) -> Any:
         try:

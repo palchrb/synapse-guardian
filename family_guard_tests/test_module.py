@@ -640,10 +640,66 @@ class NoWatchControlRoomTestCase(FamilyGuardTestCase):
         self.assertNotIn(
             self.module.check_event_allowed, callbacks._check_event_allowed_callbacks
         )
+
+    def test_kid_cannot_open_up_own_room_without_strict_mode(self) -> None:
+        """The cheap `user_may_send_state_event` covers this, not the costly hook."""
         room_id = self.helper.create_room_as(self.kid, is_public=False, tok=self.kid_tok)
         self.helper.send_state(
-            room_id, EventTypes.JoinRules, {"join_rule": JoinRules.PUBLIC}, tok=self.kid_tok
+            room_id,
+            EventTypes.JoinRules,
+            {"join_rule": JoinRules.PUBLIC},
+            tok=self.kid_tok,
+            expect_code=403,
         )
+
+    def test_kid_may_keep_own_room_invite_only(self) -> None:
+        room_id = self.helper.create_room_as(self.kid, is_public=False, tok=self.kid_tok)
+        self.helper.send_state(
+            room_id, EventTypes.JoinRules, {"join_rule": JoinRules.INVITE}, tok=self.kid_tok
+        )
+
+    def test_kid_cannot_set_canonical_alias(self) -> None:
+        room_id = self.helper.create_room_as(self.kid, is_public=False, tok=self.kid_tok)
+        self.helper.send_state(
+            room_id,
+            EventTypes.CanonicalAlias,
+            {"alias": "#kid:test"},
+            tok=self.kid_tok,
+            expect_code=403,
+        )
+
+    def test_sibling_may_open_up_own_room(self) -> None:
+        room_id = self.helper.create_room_as(
+            self.sibling, is_public=False, tok=self.sibling_tok
+        )
+        self.helper.send_state(
+            room_id,
+            EventTypes.JoinRules,
+            {"join_rule": JoinRules.PUBLIC},
+            tok=self.sibling_tok,
+        )
+
+    def test_kid_cannot_create_room_alias(self) -> None:
+        room_id = self.helper.create_room_as(self.kid, is_public=False, tok=self.kid_tok)
+        channel = self.make_request(
+            "PUT",
+            "/_matrix/client/r0/directory/room/%23kidalias%3Atest",
+            {"room_id": room_id},
+            access_token=self.kid_tok,
+        )
+        self.assertEqual(channel.code, 403, channel.result)
+
+    def test_sibling_may_create_room_alias(self) -> None:
+        room_id = self.helper.create_room_as(
+            self.sibling, is_public=False, tok=self.sibling_tok
+        )
+        channel = self.make_request(
+            "PUT",
+            "/_matrix/client/r0/directory/room/%23siblingalias%3Atest",
+            {"room_id": room_id},
+            access_token=self.sibling_tok,
+        )
+        self.assertEqual(channel.code, 200, channel.result)
 
 
 class ResilienceTestCase(FamilyGuardTestCase):
