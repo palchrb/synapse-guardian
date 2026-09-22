@@ -30,6 +30,7 @@ KNOCK = "knock"
 JOIN_RULES = "join_rules"
 CANONICAL_ALIAS = "canonical_alias"
 ALIAS = "alias"
+CREATE_ROOM = "create-room"
 
 
 class FamilyGuard:
@@ -52,6 +53,7 @@ class FamilyGuard:
             user_may_send_3pid_invite=self.user_may_send_3pid_invite,
             user_may_join_room=self.user_may_join_room,
             user_may_publish_room=self.user_may_publish_room,
+            user_may_create_room=self.user_may_create_room,
             user_may_create_room_alias=self.user_may_create_room_alias,
             user_may_send_state_event=self.user_may_send_state_event,
         )
@@ -216,6 +218,50 @@ class FamilyGuard:
             decision = rules.evaluate(member)
             if not decision.allowed:
                 return f"member {member} not allowed ({decision.reason})"
+        return None
+
+    async def user_may_create_room(self, user_id: str, room_config: Any) -> Any:
+        """Stop protected users creating a room that is open from birth.
+
+        `user_may_send_state_event` only sees state sent *after* creation, so
+        without this a protected user could ask for a public room directly.
+        Synapse picks the two-argument form by inspecting our signature
+        (spamchecker_callbacks.py:631-645), so the parameter count matters.
+        """
+        try:
+            rules = await self._rules()
+            if not rules.is_protected(user_id):
+                return NOT_SPAM
+            reason = self._open_room_reason(room_config)
+            if reason is None:
+                return NOT_SPAM
+            return self._block(CREATE_ROOM, user_id, reason, None, f"{reason}-disabled")
+        except Exception:
+            logger.exception("family_guard: user_may_create_room failed")
+            return await self._fail_closed_if_protected(user_id)
+
+    @staticmethod
+    def _open_room_reason(room_config: Any) -> str | None:
+        """Name the part of a createRoom body that would open the room up, if any."""
+        if not isinstance(room_config, Mapping):
+            return None
+        if room_config.get("visibility") == "public":
+            return "public-visibility"
+        if room_config.get("preset") in ("public_chat",):
+            return "public-preset"
+        if room_config.get("room_alias_name"):
+            return "room-alias"
+        initial_state = room_config.get("initial_state")
+        if isinstance(initial_state, (list, tuple)):
+            for event in initial_state:
+                if not isinstance(event, Mapping):
+                    continue
+                if event.get("type") != "m.room.join_rules":
+                    continue
+                content = event.get("content")
+                join_rule = content.get("join_rule") if isinstance(content, Mapping) else None
+                if join_rule not in (None, "invite"):
+                    return "open-join-rules"
         return None
 
     async def user_may_create_room_alias(self, user_id: str, room_alias: Any) -> Any:

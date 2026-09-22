@@ -668,6 +668,41 @@ class NoWatchControlRoomTestCase(FamilyGuardTestCase):
             expect_code=403,
         )
 
+    def test_kid_cannot_create_public_room(self) -> None:
+        self.helper.create_room_as(self.kid, is_public=True, tok=self.kid_tok, expect_code=403)
+
+    def test_kid_cannot_create_room_with_alias(self) -> None:
+        channel = self.make_request(
+            "POST",
+            "/_matrix/client/r0/createRoom",
+            {"room_alias_name": "kidroom"},
+            access_token=self.kid_tok,
+        )
+        self.assertEqual(channel.code, 403, channel.result)
+
+    def test_kid_cannot_create_room_with_open_initial_state(self) -> None:
+        channel = self.make_request(
+            "POST",
+            "/_matrix/client/r0/createRoom",
+            {
+                "initial_state": [
+                    {
+                        "type": "m.room.join_rules",
+                        "state_key": "",
+                        "content": {"join_rule": "public"},
+                    }
+                ]
+            },
+            access_token=self.kid_tok,
+        )
+        self.assertEqual(channel.code, 403, channel.result)
+
+    def test_kid_may_create_private_room(self) -> None:
+        self.helper.create_room_as(self.kid, is_public=False, tok=self.kid_tok)
+
+    def test_sibling_may_create_public_room(self) -> None:
+        self.helper.create_room_as(self.sibling, is_public=True, tok=self.sibling_tok)
+
     def test_sibling_may_open_up_own_room(self) -> None:
         room_id = self.helper.create_room_as(
             self.sibling, is_public=False, tok=self.sibling_tok

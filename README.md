@@ -95,16 +95,20 @@ modules:
   state** on every process that dispatches it — a server-wide cost paid for one
   room. Set it to `false` on a busy server to rely on `refresh_interval_s`
   instead. It is never registered when `control_room` is unset.
-- `strict_local_events` (default `false`): also stop a protected user from
-  knocking on a local room, opening their own room's join rules, or setting a
-  canonical alias. It registers Synapse's `check_event_allowed`, and merely
+- `strict_local_events` (default `false`): the only thing left that this adds
+  is stopping a protected user **knocking** on a local room. Opening up a room
+  is already blocked for free: `user_may_create_room` refuses a public room at
+  creation, and `user_may_send_state_event` / `user_may_create_room_alias`
+  refuse join-rule, canonical-alias and alias changes afterwards. It registers
+  Synapse's `check_event_allowed`, and merely
   registering it makes Synapse load the room's previous state from the database
   before **every** locally created event and **every** inbound federated event,
   server-wide (`handlers/message.py:1437`,
   `handlers/federation_event.py:455`). The three main protections — who may
   invite the kids, who the kids may invite, and which rooms they may join — are
   enforced by spam-checker callbacks that carry no such cost and are always on.
-  Turn this on only if you need the extras and your server can afford it.
+  A knock can only lead to an invite, and that invite is blocked anyway, so
+  you almost certainly do not need this.
 
 Config errors make Synapse refuse to start.
 

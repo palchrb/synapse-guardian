@@ -59,7 +59,7 @@ Registered via `ModuleApi.register_spam_checker_callbacks`
 | `user_may_send_state_event` | `(user_id, room_id, event_type, state_key, content)` | `rest/client/room.py:322` | Local, client API only (`PUT /rooms/{id}/state/...`) | none (content is `deepcopy`d, `spamchecker_callbacks.py:701`) | **Yes** — `if not is_requester_admin` (`rest/client/room.py:319`) | **Used** — cheap way to stop protected users opening join rules / setting a canonical alias. Experimental upstream |
 | `user_may_create_room_alias` | `(user_id, room_alias: RoomAlias)` | `handlers/directory.py:160` | Local | none | **No** — admins are checked (the `is_admin` at `:150` only relaxes the membership requirement) | **Used** — no published aliases for protected users |
 | `user_may_publish_room` | `(user_id, room_id)` | `handlers/directory.py:453` | Local | none | No | **Used** — no directory listings for protected users |
-| `user_may_create_room` | `(user_id, config)` *or* `(user_id)` | `handlers/room.py:1233` (createRoom), `:707` (room upgrade) | Local | none | **Yes** — `if not is_requester_admin` (`room.py:1232`) | **Not used** — see open questions; `config` carries `visibility`/`preset`/`initial_state`/`invite` |
+| `user_may_create_room` | `(user_id, config)` *or* `(user_id)` | `handlers/room.py:1233` (createRoom), `:707` (room upgrade) | Local | none | **Yes** — `if not is_requester_admin` (`room.py:1232`) | **Used** — we take the 2-arg form and refuse `visibility: public`, `preset: public_chat`, `room_alias_name` and open `initial_state` join rules for protected users. Closes the "public from birth" gap that `user_may_send_state_event` cannot see. |
 | `check_event_for_spam` | `(event)` | `handlers/message.py:1197`, `federation/federation_base.py:184` | Both — but **never for membership events**, so it cannot see invites, joins or knocks | none | n/a | **Not used** — on the federation path a non-`NOT_SPAM` return **prunes the event and marks it soft-failed** (`federation_base.py:186-201`). All risk, no benefit for us |
 | `should_drop_federated_event` | `(event)` | `federation/federation_server.py:831,1339,1384` | Federated | none | n/a | **Not used** — drops events silently before auth; far too blunt |
 | `check_username_for_spam` | `(user_profile[, requester_id])` | `handlers/user_directory.py:177` | Local | none | n/a | **Not used** — user-directory search filtering, unrelated |
@@ -172,17 +172,6 @@ Worth knowing when reading metrics, because failures surface differently:
   silent apart from the log line.
 
 ## Open questions
-
-**`user_may_create_room` should probably be used.** It receives the full
-createRoom config — `visibility`, `preset`, `initial_state`, `invite`
-(`handlers/room.py:1233`, dispatcher `spamchecker_callbacks.py:631-655`) — at
-zero dispatcher cost. That closes the residual gap left by preferring
-`user_may_send_state_event` over `check_event_allowed`: a protected user can
-currently create a room that is public *from birth*, because
-`user_may_send_state_event` only sees state sent afterwards through
-`PUT /rooms/{id}/state/...`. The same callback also fires on room upgrades
-(`handlers/room.py:707`), where the config is reconstructed from the old room's
-state. Deliberately left unimplemented here — flagged for a decision.
 
 **Parameter order is unpinnable.** Because dispatchers call positionally, the
 contract test can only assert arity. A future Synapse that swapped, say,
