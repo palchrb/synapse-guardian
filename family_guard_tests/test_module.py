@@ -428,6 +428,77 @@ class DenyJoinPolicyTestCase(FamilyGuardTestCase):
         self.helper.join(room_id, self.kid, tok=self.kid_tok)
 
 
+class EmptyRoomEscapeTestCase(FamilyGuardTestCase):
+    """The kid makes an empty room of their own, then tries to get out of it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.mock_remote_profiles()
+        self.room = self.helper.create_room_as(self.kid, is_public=False, tok=self.kid_tok)
+
+    def test_cannot_invite_stranger_into_own_room(self) -> None:
+        self.helper.invite(
+            self.room, self.kid, "@stranger:stranger.org", tok=self.kid_tok, expect_code=403
+        )
+
+    def test_cannot_invite_blocked_user_on_allowed_server(self) -> None:
+        self.helper.invite(
+            self.room, self.kid, "@troll:friends.org", tok=self.kid_tok, expect_code=403
+        )
+
+    def test_may_invite_allowed_friend_into_own_room(self) -> None:
+        # Direct callback: a real REST invite would need outbound federation.
+        res = self.get_success(
+            self.module.user_may_invite(self.kid, "@friend:friends.org", self.room)
+        )
+        self.assertEqual(res, NOT_SPAM)
+
+    def test_may_invite_local_sibling_into_own_room(self) -> None:
+        self.helper.invite(self.room, self.kid, self.sibling, tok=self.kid_tok)
+
+    def test_cannot_make_own_room_public(self) -> None:
+        self.helper.send_state(
+            self.room,
+            EventTypes.JoinRules,
+            {"join_rule": JoinRules.PUBLIC},
+            tok=self.kid_tok,
+            expect_code=403,
+        )
+
+    def test_cannot_make_own_room_knockable(self) -> None:
+        self.helper.send_state(
+            self.room,
+            EventTypes.JoinRules,
+            {"join_rule": JoinRules.KNOCK},
+            tok=self.kid_tok,
+            expect_code=403,
+        )
+
+    def test_cannot_make_own_room_restricted(self) -> None:
+        self.helper.send_state(
+            self.room,
+            EventTypes.JoinRules,
+            {"join_rule": "restricted"},
+            tok=self.kid_tok,
+            expect_code=403,
+        )
+
+    def test_cannot_publish_own_room_to_directory(self) -> None:
+        channel = self.make_request(
+            "PUT",
+            f"/_matrix/client/r0/directory/list/room/{self.room}",
+            {"visibility": "public"},
+            access_token=self.kid_tok,
+        )
+        self.assertEqual(channel.code, 403, channel.result)
+
+    def test_room_stays_invite_only(self) -> None:
+        state = self.helper.get_state(
+            self.room, EventTypes.JoinRules, tok=self.kid_tok
+        )
+        self.assertEqual(state["join_rule"], JoinRules.INVITE)
+
+
 class ControlRoomTestCase(FamilyGuardTestCase):
     """Rules managed from the control room, with immediate invalidation on.
 
