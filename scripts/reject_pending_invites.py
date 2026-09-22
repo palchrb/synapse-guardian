@@ -9,9 +9,13 @@ For each protected user it obtains a short-lived access token via the Synapse
 admin "login as user" API, reads pending invites from /sync, and leaves them.
 
 Usage:
+  export FAMILY_GUARD_ADMIN_TOKEN=<token>      # safer than --admin-token: command
   reject_pending_invites.py --homeserver https://matrix.example.org \
-      --admin-token <token> --users @kid1:example.org @kid2:example.org [--dry-run]
-  reject_pending_invites.py --homeserver ... --admin-token ... --config homeserver.yaml
+      --users @kid1:example.org @kid2:example.org [--dry-run]
+  reject_pending_invites.py --homeserver ... --config homeserver.yaml
+
+`--admin-token` is still accepted but puts the token in the process list
+(visible to every local user via `ps`) and in your shell history.
 
 Only the standard library (plus PyYAML when --config is used) is required.
 """
@@ -20,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.parse
@@ -58,11 +63,19 @@ def users_from_config(path: str) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--homeserver", required=True, help="base URL, e.g. https://matrix.example.org")
-    ap.add_argument("--admin-token", required=True)
+    ap.add_argument(
+        "--admin-token",
+        help="admin access token; prefer the FAMILY_GUARD_ADMIN_TOKEN environment "
+        "variable, since argv is world-readable via `ps`",
+    )
     ap.add_argument("--users", nargs="*", default=[], help="protected user IDs")
     ap.add_argument("--config", help="homeserver.yaml to read protected_users from")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+
+    admin_token = args.admin_token or os.environ.get("FAMILY_GUARD_ADMIN_TOKEN")
+    if not admin_token:
+        ap.error("no admin token (use FAMILY_GUARD_ADMIN_TOKEN or --admin-token)")
 
     users = list(args.users)
     if args.config:
@@ -73,7 +86,7 @@ def main() -> int:
     hs = args.homeserver.rstrip("/")
     for user_id in users:
         quoted = urllib.parse.quote(user_id)
-        login = request("POST", f"{hs}/_synapse/admin/v1/users/{quoted}/login", args.admin_token, {})
+        login = request("POST", f"{hs}/_synapse/admin/v1/users/{quoted}/login", admin_token, {})
         token = login["access_token"]
         sync = request(
             "GET",

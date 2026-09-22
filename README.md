@@ -72,6 +72,7 @@ modules:
       trusted_senders: []                    # extra local users whose room entries count
       refresh_interval_s: 30                 # max seconds before a rule change is picked up
       watch_control_room: true               # see "Workers" before turning this off
+      strict_local_events: false             # costs a DB state load per event; see below
       dry_run: false                         # log/notify only, never block
 ```
 
@@ -94,6 +95,16 @@ modules:
   state** on every process that dispatches it — a server-wide cost paid for one
   room. Set it to `false` on a busy server to rely on `refresh_interval_s`
   instead. It is never registered when `control_room` is unset.
+- `strict_local_events` (default `false`): also stop a protected user from
+  knocking on a local room, opening their own room's join rules, or setting a
+  canonical alias. It registers Synapse's `check_event_allowed`, and merely
+  registering it makes Synapse load the room's previous state from the database
+  before **every** locally created event and **every** inbound federated event,
+  server-wide (`handlers/message.py:1437`,
+  `handlers/federation_event.py:455`). The three main protections — who may
+  invite the kids, who the kids may invite, and which rooms they may join — are
+  enforced by spam-checker callbacks that carry no such cost and are always on.
+  Turn this on only if you need the extras and your server can afford it.
 
 Config errors make Synapse refuse to start.
 

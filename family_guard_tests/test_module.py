@@ -296,6 +296,8 @@ class InvitesFromKidTestCase(FamilyGuardTestCase):
 
 
 class JoinsTestCase(FamilyGuardTestCase):
+    CONFIG_OVERRIDES = {"strict_local_events": True}
+
     def test_kid_join_with_invite_ok(self) -> None:
         room_id = self.helper.create_room_as(self.sibling, is_public=False, tok=self.sibling_tok)
         self.helper.invite(room_id, self.sibling, self.kid, tok=self.sibling_tok)
@@ -373,6 +375,8 @@ class JoinsTestCase(FamilyGuardTestCase):
 
 
 class KnocksTestCase(FamilyGuardTestCase):
+    CONFIG_OVERRIDES = {"strict_local_events": True}
+
     def knock_room(self) -> str:
         room_id = self.helper.create_room_as(
             self.sibling, is_public=False, room_version="10", tok=self.sibling_tok
@@ -504,7 +508,7 @@ class AdminProtectedTestCase(FamilyGuardTestCase):
 
 
 class DryRunTestCase(FamilyGuardTestCase):
-    CONFIG_OVERRIDES = {"dry_run": True, "notify_room": True}
+    CONFIG_OVERRIDES = {"dry_run": True, "notify_room": True, "strict_local_events": True}
 
     def test_dry_run_allows_and_logs(self) -> None:
         with self.assertLogs("family_guard.module", level="INFO") as logs:
@@ -595,6 +599,16 @@ class ConfigTestCase(unittest.TestCase):
         self.assertTrue(cfg.static_rules.is_protected(KID))
 
 
+class StrictLocalEventsTestCase(FamilyGuardTestCase):
+    CONFIG_OVERRIDES = {"strict_local_events": True}
+
+    def test_check_event_allowed_registered_when_enabled(self) -> None:
+        callbacks = self.hs.get_module_api_callbacks().third_party_event_rules
+        self.assertIn(
+            self.module.check_event_allowed, callbacks._check_event_allowed_callbacks
+        )
+
+
 class WatchControlRoomTestCase(FamilyGuardTestCase):
     """`on_new_event` is costly server-wide, so it is only registered when usable."""
 
@@ -620,14 +634,15 @@ class NoWatchControlRoomTestCase(FamilyGuardTestCase):
         self.module._store._loaded_at -= 31
         self.get_success(self.federated_invite("@a:new.org", room_id="!b:new.org"))
 
-    def test_check_event_allowed_still_registered(self) -> None:
+    def test_check_event_allowed_not_registered_by_default(self) -> None:
+        """It costs a state load per event server-wide, so it is opt-in."""
+        callbacks = self.hs.get_module_api_callbacks().third_party_event_rules
+        self.assertNotIn(
+            self.module.check_event_allowed, callbacks._check_event_allowed_callbacks
+        )
         room_id = self.helper.create_room_as(self.kid, is_public=False, tok=self.kid_tok)
         self.helper.send_state(
-            room_id,
-            EventTypes.JoinRules,
-            {"join_rule": JoinRules.PUBLIC},
-            tok=self.kid_tok,
-            expect_code=403,
+            room_id, EventTypes.JoinRules, {"join_rule": JoinRules.PUBLIC}, tok=self.kid_tok
         )
 
 

@@ -61,6 +61,7 @@ class FamilyGuardConfig:
     trusted_senders: frozenset[str] = field(default_factory=frozenset)
     refresh_interval_s: float = 30.0
     watch_control_room: bool = True
+    strict_local_events: bool = False
     dry_run: bool = False
 
     @classmethod
@@ -78,6 +79,7 @@ class FamilyGuardConfig:
             "trusted_senders",
             "refresh_interval_s",
             "watch_control_room",
+            "strict_local_events",
             "dry_run",
         }
         unknown = set(cfg) - known
@@ -129,5 +131,6 @@ class FamilyGuardConfig:
             trusted_senders=frozenset(s.lower() for s in trusted),
             refresh_interval_s=_number(cfg, "refresh_interval_s", 30),
             watch_control_room=_bool(cfg, "watch_control_room", True),
+            strict_local_events=_bool(cfg, "strict_local_events", False),
             dry_run=_bool(cfg, "dry_run", False),
         )

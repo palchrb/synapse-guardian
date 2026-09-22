@@ -57,19 +57,28 @@ class FamilyGuard:
         # (third_party_event_rules_callbacks.py:408-425). Registering it when we
         # cannot use it would tax the whole server for nothing.
         self._watching_control_room = config.control_room is not None and config.watch_control_room
+        # `check_event_allowed` is costlier still: registering it makes Synapse
+        # load the room's previous state from the database before *every* local
+        # event creation and every inbound federated event
+        # (third_party_event_rules_callbacks.py:276-284, called from
+        # handlers/message.py:1437 and handlers/federation_event.py:455). The
+        # three goals (invite in, invite out, join) are all enforced by
+        # spam-checker callbacks, which carry no such cost; this one only adds
+        # the extras (local knocks, opening up join rules, aliases), so it is
+        # opt-in.
+        callbacks: dict[str, Any] = {}
+        if config.strict_local_events:
+            callbacks["check_event_allowed"] = self.check_event_allowed
         if self._watching_control_room:
-            api.register_third_party_rules_callbacks(
-                check_event_allowed=self.check_event_allowed,
-                on_new_event=self.on_new_event,
-            )
-        else:
-            api.register_third_party_rules_callbacks(
-                check_event_allowed=self.check_event_allowed,
-            )
+            callbacks["on_new_event"] = self.on_new_event
+        if callbacks:
+            api.register_third_party_rules_callbacks(**callbacks)
         logger.info(
-            "family_guard: loaded (control_room=%s, watching=%s, uninvited_joins=%s, dry_run=%s)",
+            "family_guard: loaded (control_room=%s, watching=%s, strict_local_events=%s, "
+            "uninvited_joins=%s, dry_run=%s)",
             config.control_room,
             self._watching_control_room,
+            config.strict_local_events,
             config.uninvited_joins,
             config.dry_run,
         )
