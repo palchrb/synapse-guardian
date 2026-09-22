@@ -213,6 +213,12 @@ the module in a worker deployment.**
   `is_mine`, `run_as_background_process`) is a worker-store read or local
   helper, available everywhere.
 
+- **Only the main process publishes `guardian.effective_rules`.** Every worker
+  loads the module and enforces -- that is required, since an invite is checked
+  wherever its request lands -- but two workers with briefly different views of
+  the rules would otherwise overwrite each other's event. The start-up log line
+  says `publishing=True` on exactly one process.
+
 ## Control room setup
 
 1. As an admin, create a **private, unencrypted** room. Do not set an alias,

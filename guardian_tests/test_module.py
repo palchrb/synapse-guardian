@@ -703,6 +703,38 @@ class WarmUpTestCase(GuardianTestCase):
         self.assertIn(("guardian.effective_rules", ""), state)
 
 
+class WorkerPublishTestCase(GuardianTestCase):
+    """Only the main process publishes; every worker still enforces."""
+
+    def test_worker_does_not_publish(self) -> None:
+        from synapse_guardian.module import Guardian
+
+        api = self.module._api
+        original = type(api).worker_app
+        try:
+            type(api).worker_app = property(lambda self: "synapse.app.generic_worker")
+            worker = Guardian(self.module._config, api)
+        finally:
+            type(api).worker_app = original
+        self.assertIsNone(worker._publisher)
+
+    def test_worker_still_enforces(self) -> None:
+        """The spam-checker callbacks are what matter on a worker."""
+        from synapse_guardian.module import Guardian
+
+        api = self.module._api
+        original = type(api).worker_app
+        try:
+            type(api).worker_app = property(lambda self: "synapse.app.generic_worker")
+            worker = Guardian(self.module._config, api)
+        finally:
+            type(api).worker_app = original
+        verdict = self.get_success(
+            worker.user_may_invite("@stranger:stranger.org", KID, "!r")
+        )
+        self.assertNotEqual(verdict, NOT_SPAM)
+
+
 class NoPublishTestCase(GuardianTestCase):
     """Without somewhere to write, or someone to write as, we publish nothing."""
 

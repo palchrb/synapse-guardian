@@ -51,8 +51,16 @@ class Guardian:
         # Tell the control room what we actually loaded, so the bot can show the
         # static baseline it cannot otherwise see. Needs somewhere to write and
         # someone to write as.
+        # Enforcement runs in every worker, but one writer is enough -- and two
+        # workers with briefly different views of the rules (replication lag,
+        # plus our own refresh interval) would otherwise take turns overwriting
+        # each other's event. `worker_app` is None only on the main process.
         self._publisher: RoomPublisher | None = None
-        if config.control_room is not None and config.notify_user is not None:
+        if (
+            config.control_room is not None
+            and config.notify_user is not None
+            and getattr(api, "worker_app", None) is None
+        ):
             self._publisher = RoomPublisher(api, config.control_room, config.notify_user)
         self._store = PolicyStore(
             api,
@@ -100,14 +108,17 @@ class Guardian:
         # that sees no invite or join after a restart never loads them -- and so
         # never publishes `guardian.effective_rules` either, leaving the bot
         # blind to the static rules. Warm up shortly after start-up instead.
-        if config.control_room is not None:
+        # Only the publisher needs an early load; enforcement loads lazily on the
+        # first callback in whichever worker handles it.
+        if self._publisher is not None:
             api.delayed_background_call(
                 5_000, self._warm_up, desc="guardian_warm_up"
             )
         logger.info(
-            "guardian: loaded (control_room=%s, watching=%s, strict_local_events=%s, "
-            "uninvited_joins=%s, dry_run=%s)",
+            "guardian: loaded (control_room=%s, publishing=%s, watching=%s, "
+            "strict_local_events=%s, uninvited_joins=%s, dry_run=%s)",
             config.control_room,
+            self._publisher is not None,
             self._watching_control_room,
             config.strict_local_events,
             config.uninvited_joins,
