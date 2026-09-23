@@ -48,9 +48,11 @@ fixes a room-version-12 control room silently ignoring its own creator.
    enough power in the control room for the `guardian.*` event types (the
    `m.room.power_levels` example below grants the bot 50). Server admins are
    still honoured regardless, and a room-version-12 creator always is.
-3. `notify_user` no longer confers trust. It is still the account notices and
-   `guardian.effective_rules` are sent as, and still needs power to send that
-   state event.
+3. `notify_user` no longer confers trust. It is still the account
+   `guardian.effective_rules` is sent as -- and, with `notify_via: room`, the
+   account notices are posted as -- and still needs power to send that state
+   event. With `notify_via: bot` the bot posts the notices itself, but
+   `notify_user` is still required for publishing the rule set.
 
 ## Upgrading from family_guard 0.3.x
 
