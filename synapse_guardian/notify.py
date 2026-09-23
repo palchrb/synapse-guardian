@@ -1,4 +1,16 @@
-"""Posting blocked actions into the control room."""
+"""Posting blocked actions into the control room.
+
+Two transports, chosen with `notify_via`:
+
+- `room` (default): the module posts the notice itself with
+  `create_and_send_event_into_room`. Always plaintext, but it works as long as
+  Synapse is up.
+- `bot`: the module POSTs the notice to the maubot plugin, which posts it --
+  encrypted if the control room is. Notices are lost while the bot is down.
+
+Neither transport can encrypt the *rules*: `guardian.*` and
+`guardian.effective_rules` are state events, and Matrix never encrypts those.
+"""
 
 from __future__ import annotations
 
@@ -40,25 +52,13 @@ def format_block(
     )
 
 
-class RoomNotifier:
-    """Posts m.notice events into the control room as `notify_user`.
+class _ThrottledNotifier:
+    """Dedupe and flood-cap shared by every transport.
 
-    `create_and_send_event_into_room` requires the sender to be a local user
-    already joined to the room. Notices are deduplicated per
-    (kind, actor, target) for `dedupe_s`.
+    Subclasses implement `message`; `notify` is the throttled entry point.
     """
 
-    def __init__(
-        self,
-        api: Any,
-        room_id: str,
-        sender: str,
-        dedupe_s: float,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._api = api
-        self._room_id = room_id
-        self._sender = sender
+    def __init__(self, dedupe_s: float, clock: Callable[[], float] = time.monotonic) -> None:
         self._dedupe_s = dedupe_s
         self._clock = clock
         self._recent: dict[tuple[str, str, str], float] = {}
@@ -87,8 +87,7 @@ class RoomNotifier:
             self._suppressed = 0
 
         if self._sent_in_window >= MAX_NOTICES_PER_WINDOW:
-            # A flood from many distinct senders: keep logging, stop persisting
-            # events into the control room.
+            # A flood from many distinct senders: keep logging, stop sending.
             self._suppressed += 1
             return False
 
@@ -113,6 +112,30 @@ class RoomNotifier:
             return
         await self.message(format_block(kind, actor, target, room_id, rule, dry_run))
 
+    async def message(self, text: str) -> None:  # pragma: no cover - interface
+        raise NotImplementedError
+
+
+class RoomNotifier(_ThrottledNotifier):
+    """Posts m.notice events into the control room as `notify_user`.
+
+    `create_and_send_event_into_room` requires the sender to be a local user
+    already joined to the room.
+    """
+
+    def __init__(
+        self,
+        api: Any,
+        room_id: str,
+        sender: str,
+        dedupe_s: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        super().__init__(dedupe_s, clock)
+        self._api = api
+        self._room_id = room_id
+        self._sender = sender
+
     async def message(self, text: str) -> None:
         try:
             await self._api.create_and_send_event_into_room(
@@ -130,3 +153,54 @@ class RoomNotifier:
                 self._sender,
                 self._sender,
             )
+
+
+class WebhookNotifier(_ThrottledNotifier):
+    """Hands the notice to the maubot plugin, which posts it (encrypted if the
+    room is).
+
+    Fire-and-forget: the caller already runs this as a background process, and
+    a failure here must never touch an enforcement decision. Failures are
+    logged once per kind of failure rather than once per notice, so a bot that
+    is down for an hour does not fill the log.
+    """
+
+    def __init__(
+        self,
+        api: Any,
+        url: str,
+        secret: str,
+        dedupe_s: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        super().__init__(dedupe_s, clock)
+        self._api = api
+        self._url = url
+        # Never logged, never put in an exception message.
+        self._secret = secret
+        self._warned: set[str] = set()
+
+    def _warn_once(self, exc: BaseException) -> None:
+        key = type(exc).__name__
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        logger.warning(
+            "guardian: could not deliver notice to the bot at %s (%s: %s); "
+            "notices are dropped while the bot is unreachable",
+            self._url,
+            key,
+            exc,
+        )
+
+    async def message(self, text: str) -> None:
+        try:
+            await self._api.http_client.post_json_get_json(
+                self._url,
+                {"text": text},
+                {"Authorization": [f"Bearer {self._secret}"]},
+            )
+        except Exception as e:  # noqa: BLE001 - fire-and-forget by design
+            self._warn_once(e)
+            return
+        self._warned.clear()

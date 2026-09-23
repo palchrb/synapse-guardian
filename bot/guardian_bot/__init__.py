@@ -8,16 +8,19 @@ themselves (power levels), plus optionally membership in `admins`.
 
 from __future__ import annotations
 
+import hmac
 import html
+import json
 import re
 import time
 import urllib.parse
 from collections.abc import Mapping
 from typing import Any
 
+from aiohttp import web as aiohttp_web
 from maubot import MessageEvent, Plugin
-from maubot.handlers import command
-from mautrix.types import EventType, RoomID, StateEvent
+from maubot.handlers import command, web
+from mautrix.types import EventType, MessageType, RoomID, StateEvent, TextMessageEventContent
 from mautrix.util.config import BaseProxyConfig, ConfigUpdateHelper
 
 # vendored copy of synapse_guardian/policy.py (see `make bot-build`)
@@ -74,6 +77,7 @@ class Config(BaseProxyConfig):
     def do_update(self, helper: ConfigUpdateHelper) -> None:
         helper.copy("control_room")
         helper.copy("admins")
+        helper.copy("notify_secret")
 
 
 # Element sends a pill as a matrix.to link in `formatted_body`, leaving only the
@@ -223,6 +227,43 @@ class RoomAuthority:
         return event_power_level(self._power_levels, event_type.t, event_type.is_state)
 
 
+# --- notice webhook (the module POSTs here when notify_via: bot) -------------
+
+# Mirrors MAX_NOTICES_PER_WINDOW in the module: a leaked secret must not be
+# usable to flood the room, even though the module already throttles its own.
+NOTIFY_MAX_PER_WINDOW = 20
+NOTIFY_WINDOW_S = 300.0
+NOTIFY_MAX_BODY = 8192
+
+
+def parse_notify_request(
+    auth_header: str | None, body: bytes, secret: str | None, max_bytes: int = NOTIFY_MAX_BODY
+) -> tuple[int, str | None]:
+    """Validate a webhook POST. Returns (status, text); text is None on refusal.
+
+    Pure, so it can be tested without maubot's runtime. The endpoint is a sink:
+    it accepts a notice or refuses, and reveals nothing either way.
+    """
+    if not secret:
+        return 503, None
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return 401, None
+    if not hmac.compare_digest(auth_header[len("Bearer ") :], secret):
+        return 401, None
+    if len(body) > max_bytes:
+        return 413, None
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return 400, None
+    if not isinstance(payload, dict):
+        return 400, None
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return 400, None
+    return 200, text
+
+
 class GuardianBot(Plugin):
     config: Config
 
@@ -230,10 +271,49 @@ class GuardianBot(Plugin):
     def get_config_class(cls) -> type[BaseProxyConfig]:
         return Config
 
+    _notify_window_started: float = 0.0
+    _notify_sent_in_window: int = 0
+
     async def start(self) -> None:
         self.config.load_and_update()
         if not self.config["control_room"]:
             self.log.error("guardian_bot: control_room is not configured; refusing all commands")
+
+    # --- notice webhook ------------------------------------------------------
+
+    def _notify_allowed(self) -> bool:
+        now = time.monotonic()
+        if now - self._notify_window_started >= NOTIFY_WINDOW_S:
+            self._notify_window_started = now
+            self._notify_sent_in_window = 0
+        if self._notify_sent_in_window >= NOTIFY_MAX_PER_WINDOW:
+            return False
+        self._notify_sent_in_window += 1
+        return True
+
+    @web.post("/notify")
+    async def notify(self, request: aiohttp_web.Request) -> aiohttp_web.Response:
+        """Post a notice from the module. Encrypted if the control room is."""
+        body = await request.content.read(NOTIFY_MAX_BODY + 1)
+        status, text = parse_notify_request(
+            request.headers.get("Authorization"), body, self.config["notify_secret"]
+        )
+        if status != 200 or text is None:
+            return aiohttp_web.json_response({}, status=status)
+        room = self.control_room
+        if room is None:
+            return aiohttp_web.json_response({}, status=503)
+        if not self._notify_allowed():
+            # Drop quietly: answering 200 keeps the module from retrying.
+            return aiohttp_web.json_response({})
+        try:
+            await self.client.send_message(
+                room, TextMessageEventContent(msgtype=MessageType.NOTICE, body=text)
+            )
+        except Exception as e:  # noqa: BLE001
+            self.log.warning(f"guardian_bot: could not post notice: {e}")
+            return aiohttp_web.json_response({}, status=502)
+        return aiohttp_web.json_response({})
 
     # --- guards --------------------------------------------------------------
 

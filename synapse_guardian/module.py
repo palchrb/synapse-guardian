@@ -14,7 +14,12 @@ from synapse.module_api import NOT_SPAM, EventBase, ModuleApi
 from synapse.module_api.errors import Codes
 
 from synapse_guardian.config import GuardianConfig
-from synapse_guardian.notify import RoomNotifier, format_block
+from synapse_guardian.notify import (
+    RoomNotifier,
+    WebhookNotifier,
+    _ThrottledNotifier,
+    format_block,
+)
 from synapse_guardian.policy import RuleSet
 from synapse_guardian.publish import RoomPublisher
 from synapse_guardian.store import PolicyStore
@@ -43,12 +48,21 @@ class Guardian:
         self._api = api
         self._config = config
         self._warned_no_inviter_lookup = False
-        self._notifier: RoomNotifier | None = None
+        # `notify_room` switches notices on; `notify_via` picks who posts them.
+        # The bot transport exists so the control room can be encrypted -- only
+        # the notices gain from that, since state events are never encrypted.
+        self._notifier: _ThrottledNotifier | None = None
         if config.notify_room:
-            assert config.control_room is not None and config.notify_user is not None
-            self._notifier = RoomNotifier(
-                api, config.control_room, config.notify_user, config.notify_dedupe_s
-            )
+            if config.notify_via == "bot":
+                assert config.notify_url is not None and config.notify_secret is not None
+                self._notifier = WebhookNotifier(
+                    api, config.notify_url, config.notify_secret, config.notify_dedupe_s
+                )
+            else:
+                assert config.control_room is not None and config.notify_user is not None
+                self._notifier = RoomNotifier(
+                    api, config.control_room, config.notify_user, config.notify_dedupe_s
+                )
         # Tell the control room what we actually loaded, so the bot can show the
         # static baseline it cannot otherwise see. Needs somewhere to write and
         # someone to write as.
@@ -116,10 +130,11 @@ class Guardian:
                 5_000, self._warm_up, desc="guardian_warm_up"
             )
         logger.info(
-            "guardian: loaded (control_room=%s, publishing=%s, watching=%s, "
-            "strict_local_events=%s, uninvited_joins=%s, dry_run=%s)",
+            "guardian: loaded (control_room=%s, publishing=%s, notify=%s, "
+            "watching=%s, strict_local_events=%s, uninvited_joins=%s, dry_run=%s)",
             config.control_room,
             self._publisher is not None,
+            config.notify_via if config.notify_room else "off",
             self._watching_control_room,
             config.strict_local_events,
             config.uninvited_joins,

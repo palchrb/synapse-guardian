@@ -212,7 +212,11 @@ room=<id> reason=<rule|default-deny>`.
 Notices go through a small `Notifier` interface (`synapse_guardian/notify.py`:
 `notify(kind, actor, target, room_id, rule, dry_run)` + `message(text)`) so a
 webhook transport to the bot (`notify_via: bot`, phase 2) can be dropped in.
-v1 implements `RoomNotifier` and `NullNotifier`.
+`RoomNotifier` posts the event itself; `WebhookNotifier` (0.7.0, `notify_via:
+bot`) POSTs it to the maubot plugin instead, so the control room can be
+encrypted. Both inherit the dedupe and flood cap from `_ThrottledNotifier`.
+Encryption only ever covers the notices: the `guardian.*` rules and
+`guardian.effective_rules` are state events, which Matrix never encrypts.
 
 `notify_room: true` posts an `m.notice` into `control_room` for each block via
 `module_api.create_and_send_event_into_room` as `notify_user`. That API
@@ -242,7 +246,10 @@ modules:
       blocked_servers: []
       uninvited_joins: known_rooms         # deny | known_rooms
       notify_room: false
-      notify_user: "@guardianbot:example.org"   # required if notify_room; must be joined to control_room
+      notify_via: room                          # room | bot
+      notify_user: "@guardianbot:example.org"   # required if notify_via: room; must be joined to control_room
+      notify_url: ""                            # required if notify_via: bot
+      notify_secret: ""                         # or notify_secret_path
       notify_dedupe_s: 300
       refresh_interval_s: 30
       dry_run: false

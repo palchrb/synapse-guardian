@@ -395,6 +395,73 @@ def test_parse_config_defaults() -> None:
     # Off by default: registering on_new_event makes Synapse load the room's
     # full current state for every persisted event, server-wide.
     assert not cfg.watch_control_room
+    # The module posts notices itself unless told otherwise.
+    assert cfg.notify_via == "room"
+
+
+def test_parse_config_rejects_unknown_notify_via() -> None:
+    with pytest.raises(ConfigError, match="notify_via must be one of"):
+        GuardianConfig.parse({"notify_via": "carrier-pigeon"})
+
+
+def test_parse_config_bot_transport_requires_url_and_secret() -> None:
+    base = {"notify_room": True, "notify_via": "bot"}
+    with pytest.raises(ConfigError, match="requires notify_url"):
+        GuardianConfig.parse(base)
+    with pytest.raises(ConfigError, match="requires notify_secret"):
+        GuardianConfig.parse({**base, "notify_url": "http://127.0.0.1:29316/notify"})
+
+
+def test_parse_config_bot_transport_needs_no_control_room_or_user() -> None:
+    """The bot knows its own room; we only need to reach the bot."""
+    cfg = GuardianConfig.parse(
+        {
+            "notify_room": True,
+            "notify_via": "bot",
+            "notify_url": "http://127.0.0.1:29316/notify",
+            "notify_secret": "s3cret",
+        }
+    )
+    assert cfg.notify_via == "bot"
+    assert cfg.notify_secret == "s3cret"
+    assert cfg.control_room is None
+
+
+def test_parse_config_room_transport_still_requires_control_room_and_user() -> None:
+    with pytest.raises(ConfigError, match="requires control_room"):
+        GuardianConfig.parse({"notify_room": True})
+    with pytest.raises(ConfigError, match="requires notify_user"):
+        GuardianConfig.parse({"notify_room": True, "control_room": "!r:test"})
+
+
+def test_parse_config_secret_can_come_from_a_file(tmp_path) -> None:
+    path = tmp_path / "secret"
+    path.write_text("  from-a-file\n")
+    cfg = GuardianConfig.parse(
+        {
+            "notify_room": True,
+            "notify_via": "bot",
+            "notify_url": "http://127.0.0.1:29316/notify",
+            "notify_secret_path": str(path),
+        }
+    )
+    assert cfg.notify_secret == "from-a-file"
+
+
+def test_parse_config_rejects_both_secret_forms(tmp_path) -> None:
+    path = tmp_path / "secret"
+    path.write_text("x")
+    with pytest.raises(ConfigError, match="not both"):
+        GuardianConfig.parse({"notify_secret": "a", "notify_secret_path": str(path)})
+
+
+def test_parse_config_rejects_unreadable_or_empty_secret_file(tmp_path) -> None:
+    with pytest.raises(ConfigError, match="could not read"):
+        GuardianConfig.parse({"notify_secret_path": str(tmp_path / "nope")})
+    empty = tmp_path / "empty"
+    empty.write_text("   ")
+    with pytest.raises(ConfigError, match="is empty"):
+        GuardianConfig.parse({"notify_secret_path": str(empty)})
 
 
 def test_parse_config_watch_control_room_can_be_enabled() -> None:

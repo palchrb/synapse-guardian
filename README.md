@@ -124,7 +124,10 @@ modules:
       blocked_servers: []
       uninvited_joins: known_rooms           # deny | known_rooms (default)
       notify_room: false                     # post a notice on every block
-      notify_user: "@guardianbot:example.org"  # required with notify_room
+      notify_via: room                       # room | bot -- who posts the notice
+      notify_user: "@guardianbot:example.org"  # required with notify_via: room
+      # notify_url: "http://127.0.0.1:29316/_matrix/maubot/plugin/guardian/notify"
+      # notify_secret_path: /etc/matrix-synapse/guardian-notify.secret
       notify_dedupe_s: 300
       refresh_interval_s: 15                 # max seconds before a rule change is picked up
       watch_control_room: false            # true = instant rule updates, but costs a state load per event
@@ -139,6 +142,10 @@ modules:
   cannot see who is there).
 - `notify_user` must be a local user that is already **joined** to the control
   room — normally the maubot account. The module does not create or join users.
+- `notify_via` picks who posts the notices. `room` (the default) has the module
+  post them itself, which is always plaintext but does not depend on the bot.
+  `bot` POSTs them to the maubot plugin, which posts them — encrypted if the
+  control room is. See *Encrypted control room* below.
 - **Who may write rules** is decided by the control room's own power levels: a
   local user is honoured if they are a Synapse server admin, or if they
   currently hold enough power there to send that `guardian.*` state event.
@@ -218,6 +225,51 @@ the module in a worker deployment.**
   wherever its request lands -- but two workers with briefly different views of
   the rules would otherwise overwrite each other's event. The start-up log line
   says `publishing=True` on exactly one process.
+
+## Encrypted control room
+
+Notices posted by the module are always plaintext: Synapse has no device keys
+to encrypt with. If you want an encrypted control room, let the bot post them
+instead.
+
+**Encryption does not protect the rules.** `guardian.protected_user`,
+`guardian.allowed_server`, `guardian.effective_rules` and the rest are *state
+events*, and Matrix never encrypts state events. Only the notices gain
+anything; who is protected and which servers are allowed stay readable to the
+server either way. Encrypt the room if you dislike the "unencrypted" badges,
+not because it makes the rules secret.
+
+1. Enable end-to-end encryption in the maubot **client** (Manage clients →
+   the bot's account → enable encryption), and make sure the bot is joined to
+   the control room.
+2. Pick a shared secret and give it to both sides:
+
+   ```sh
+   openssl rand -hex 32 > /etc/matrix-synapse/guardian-notify.secret
+   chmod 0640 /etc/matrix-synapse/guardian-notify.secret
+   chown root:matrix-synapse /etc/matrix-synapse/guardian-notify.secret
+   ```
+
+3. In `homeserver.yaml`:
+
+   ```yaml
+   notify_room: true
+   notify_via: bot
+   notify_url: "http://127.0.0.1:29316/_matrix/maubot/plugin/<instance-id>/notify"
+   notify_secret_path: /etc/matrix-synapse/guardian-notify.secret
+   ```
+
+   `notify_secret: "..."` inline works too; the file form keeps the secret out
+   of `homeserver.yaml`. Set one or the other, not both. `<instance-id>` is the
+   maubot instance name, the same one in the plugin's URL in the maubot UI.
+
+4. In the plugin config (maubot UI), set `notify_secret` to the same value.
+
+**The trade-off.** With `notify_via: bot`, notices are lost while the bot is
+down, restarting or misconfigured — the module logs one warning and carries on.
+Enforcement is never affected: blocking happens in the module and does not
+touch the bot. With `notify_via: room` the notices do not depend on anything
+beyond Synapse itself, which is why it stays the default.
 
 ## Control room setup
 

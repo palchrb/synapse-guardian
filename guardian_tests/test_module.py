@@ -849,6 +849,74 @@ class WorkerPublishTestCase(GuardianTestCase):
         self.assertNotEqual(verdict, NOT_SPAM)
 
 
+class WebhookNotifyTestCase(GuardianTestCase):
+    """With notify_via: bot the module hands notices to the plugin over HTTP.
+
+    The point of the transport is an encrypted control room; the point of these
+    tests is that enforcement does not depend on it.
+    """
+
+    CONFIG_OVERRIDES = {
+        "notify_room": True,
+        "notify_via": "bot",
+        "notify_url": "http://127.0.0.1:29316/_matrix/maubot/plugin/guardian/notify",
+        "notify_secret": "s3cret",
+    }
+
+    def prepare(self, reactor: MemoryReactor, clock: Clock, hs: HomeServer) -> None:
+        super().prepare(reactor, clock, hs)
+        self.posts: list[tuple[str, dict, dict]] = []
+        self.http_fail: Exception | None = None
+
+        async def fake_post(uri: str, body: dict, headers: dict) -> dict:
+            self.posts.append((uri, body, headers))
+            if self.http_fail is not None:
+                raise self.http_fail
+            return {}
+
+        self.module._notifier._api.http_client.post_json_get_json = fake_post  # type: ignore[attr-defined]
+
+    def test_uses_the_webhook_transport(self) -> None:
+        from synapse_guardian.notify import WebhookNotifier
+
+        self.assertIsInstance(self.module._notifier, WebhookNotifier)
+
+    def test_block_posts_the_notice_to_the_bot(self) -> None:
+        self.assert_federated_invite_blocked("@stranger:stranger.org")
+        self.pump(1)
+        self.assertEqual(len(self.posts), 1)
+        uri, body, headers = self.posts[0]
+        self.assertEqual(uri, self.CONFIG_OVERRIDES["notify_url"])
+        self.assertIn("blocked invite", body["text"])
+        self.assertEqual(headers, {"Authorization": ["Bearer s3cret"]})
+
+    def test_a_dead_bot_does_not_change_the_verdict(self) -> None:
+        self.http_fail = ConnectionRefusedError("bot is down")
+        with self.assertLogs("synapse_guardian.notify", level="WARNING") as logs:
+            self.assert_federated_invite_blocked("@stranger:stranger.org")
+            self.pump(1)
+        # The invite is still refused, and the operator is told once.
+        self.assertTrue(any("could not deliver notice" in line for line in logs.output))
+        self.assertNotIn("s3cret", "\n".join(logs.output))
+
+    def test_nothing_is_posted_into_the_control_room(self) -> None:
+        """The bot posts it, so the module must not also write an event."""
+        self.grant_bot_state_power()
+        self.assert_federated_invite_blocked("@stranger:stranger.org")
+        self.pump(1)
+        channel = self.make_request(
+            "GET",
+            f"/rooms/{self.control_room}/messages?dir=b&limit=50",
+            access_token=self.parent_tok,
+        )
+        notices = [
+            ev
+            for ev in channel.json_body["chunk"]
+            if ev["type"] == "m.room.message" and "guardian:" in ev["content"].get("body", "")
+        ]
+        self.assertEqual(notices, [])
+
+
 class NoPublishTestCase(GuardianTestCase):
     """Without somewhere to write, or someone to write as, we publish nothing."""
 

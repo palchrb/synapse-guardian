@@ -14,6 +14,7 @@ from synapse_guardian.policy import (
 )
 
 UNINVITED_JOIN_POLICIES = ("deny", "known_rooms")
+NOTIFY_TRANSPORTS = ("room", "bot")
 
 
 class ConfigError(ValueError):
@@ -34,6 +35,23 @@ def _opt_str(cfg: dict[str, Any], key: str) -> str | None:
     if value is not None and not isinstance(value, str):
         raise ConfigError(f"{key} must be a string")
     return value
+
+
+def _secret(cfg: dict[str, Any], key: str, path_key: str) -> str | None:
+    """A secret given inline or in a file, so it need not sit in homeserver.yaml."""
+    inline = _opt_str(cfg, key)
+    path = _opt_str(cfg, path_key)
+    if inline and path:
+        raise ConfigError(f"set {key} or {path_key}, not both")
+    if path:
+        try:
+            with open(path) as f:
+                inline = f.read().strip()
+        except OSError as e:
+            raise ConfigError(f"could not read {path_key} {path!r}: {e}") from e
+        if not inline:
+            raise ConfigError(f"{path_key} {path!r} is empty")
+    return inline or None
 
 
 def _bool(cfg: dict[str, Any], key: str, default: bool) -> bool:
@@ -57,6 +75,9 @@ class GuardianConfig:
     uninvited_joins: str = "known_rooms"
     notify_room: bool = False
     notify_user: str | None = None
+    notify_via: str = "room"
+    notify_url: str | None = None
+    notify_secret: str | None = None
     notify_dedupe_s: float = 300.0
     refresh_interval_s: float = 15.0
     watch_control_room: bool = False
@@ -74,6 +95,10 @@ class GuardianConfig:
             "uninvited_joins",
             "notify_room",
             "notify_user",
+            "notify_via",
+            "notify_url",
+            "notify_secret",
+            "notify_secret_path",
             "notify_dedupe_s",
             "refresh_interval_s",
             "watch_control_room",
@@ -113,11 +138,31 @@ class GuardianConfig:
         notify_user = _opt_str(cfg, "notify_user")
         if notify_user is not None and not is_user_id(notify_user):
             raise ConfigError("notify_user must be a user ID")
+
+        notify_via = cfg.get("notify_via", "room")
+        if notify_via not in NOTIFY_TRANSPORTS:
+            raise ConfigError(
+                f"notify_via must be one of {NOTIFY_TRANSPORTS}, got {notify_via!r}"
+            )
+        notify_url = _opt_str(cfg, "notify_url")
+        notify_secret = _secret(cfg, "notify_secret", "notify_secret_path")
+
         if notify_room:
-            if control_room is None:
-                raise ConfigError("notify_room requires control_room")
-            if notify_user is None:
-                raise ConfigError("notify_room requires notify_user")
+            if notify_via == "room":
+                # We post the event ourselves, so we need somewhere to post and
+                # a local user to post as.
+                if control_room is None:
+                    raise ConfigError("notify_room with notify_via: room requires control_room")
+                if notify_user is None:
+                    raise ConfigError("notify_room with notify_via: room requires notify_user")
+            else:
+                # The bot knows its own room; we only need to reach it.
+                if not notify_url:
+                    raise ConfigError("notify_via: bot requires notify_url")
+                if not notify_secret:
+                    raise ConfigError(
+                        "notify_via: bot requires notify_secret (or notify_secret_path)"
+                    )
 
         return cls(
             static_rules=static_rules,
@@ -125,6 +170,9 @@ class GuardianConfig:
             uninvited_joins=uninvited_joins,
             notify_room=notify_room,
             notify_user=notify_user,
+            notify_via=notify_via,
+            notify_url=notify_url,
+            notify_secret=notify_secret,
             notify_dedupe_s=_number(cfg, "notify_dedupe_s", 300),
             refresh_interval_s=_number(cfg, "refresh_interval_s", 15),
             watch_control_room=_bool(cfg, "watch_control_room", False),

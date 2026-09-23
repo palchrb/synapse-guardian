@@ -1,6 +1,6 @@
 maubot: 0.6.0
 id: no.vibb.guardian
-version: 0.5.0
+version: 0.7.0
 license: AGPL-3.0-or-later
 modules:
   - guardian_bot
@@ -8,3 +8,4 @@ main_class: GuardianBot
 extra_files:
   - base-config.yaml
 config: true
+webapp: true

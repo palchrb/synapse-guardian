@@ -37,6 +37,7 @@ persists events for a given room.
 | 4 | Start-up warm-up | **Main only** | R+W | `delayed_background_call` has **no instance gating** (`module_api/__init__.py:1445-1452`) — unlike `looping_background_call`, which respects `run_background_tasks` (`:1420`). It fires wherever it was scheduled | Would be N warm-ups, N publishes, all racing | Yes, now | `module.py:113-116` schedules it only when `self._publisher is not None`, which is main-only (see 5) |
 | 5 | Publish `guardian.effective_rules` | **Main only** | W | See "How a write reaches the persister" below | Would be a flap: two processes with briefly different views take turns overwriting | Yes | `module.py:58-64` gates the publisher on `worker_app is None`. Two further layers below |
 | 6 | Post a block notice (`m.room.message`) | **All** — whichever process handled the blocked request | W | Same write path; `m.room.message` is **not** a state event, so Synapse's dedup does not apply (`handlers/message.py:1581`) | Each process notices only its own blocks, so no double-reporting of one block. But the dedupe window and the 20-per-window cap are **per process** | Bounded at ~20·N per window, not 20 | `notify.py:69-101`; accepted, see Open questions |
+| 6b | POST a block notice to the bot (`notify_via: bot`) | **All** — whichever process handled the blocked request | W | Plain outbound HTTP via `module_api.http_client`; no replication, no Synapse write path | Same as row 6: per-process dedupe and cap, so ~20·N per window. Every worker opens its own connection to the bot | Bounded, and a dead bot costs one warning per process, not per notice | `notify.py` `WebhookNotifier`; failures never reach a decision |
 | 7 | Admin-protected ERROR + notice | **All** | W | Same | Up to N identical ERROR lines and N identical notices | Once per process per user | `store.py:184-197` guards with a per-process `_warned_admins`; see Open questions |
 | 8 | Reject a stale invite (`update_room_membership` → leave) | **All** — whichever process refused the join | W | `handlers/room_member.py:2038-2073`: tries the federated rejection, then falls back to `_generate_local_out_of_band_leave`, catching "everything from DNS failures upwards" | Only the process that refused the join acts, and only when a protected user actually attempts the join, so there is nothing to race | Yes — one leave per refused join | `module.py` `_reject_invite_in_background` dispatches it via `run_as_background_process`; failures are logged and ignored, and `dry_run` skips it |
 | 9 | The callbacks themselves | **All** | R | See [`callbacks.md`](callbacks.md) | Each request is served by exactly one process, so exactly one decision | Yes | Nothing to do — this is the design |
@@ -88,7 +89,8 @@ cap in `notify.py` is ours, and it is the only thing bounding notice volume.
 
 Our own outgoing notices pass through `check_event_for_spam`
 (`handlers/message.py:1195`). We do not register it, but
-`synapse-http-antispam` does — so every notice guardian posts is an HTTP round
+`synapse-http-antispam` does — so every notice guardian posts *via the room
+transport* is an HTTP round
 trip to Meowlnir before it is persisted. Harmless, but it is not free, and it
 is another reason the per-window cap matters.
 

@@ -5,3 +5,7 @@ control_room: "!changeme:example.org"
 # Optional: if non-empty, only these users may run mutating commands, in
 # addition to needing the power level to send the state event themselves.
 admins: []
+
+# Shared secret the Synapse module authenticates with when notify_via: bot.
+# Must match notify_secret (or notify_secret_path) in homeserver.yaml.
+notify_secret: ""
