@@ -36,79 +36,28 @@ allows every `*.skole.no` server except `evil.skole.no`, and
 case-insensitive. Catch-all patterns are refused in allow lists — not just
 `*`, but anything that matches every user or server (`@*:*`, `*.*`, `?*`).
 
-## Upgrading from 0.4.x
-
-`trusted_senders` was removed. The control room's power levels now decide who
-may manage rules, which is what the room was already enforcing — and which
-fixes a room-version-12 control room silently ignoring its own creator.
-
-1. **Delete the `trusted_senders:` line** from the module config. Synapse
-   refuses to start while it is there, with a message saying so.
-2. **Check the power levels** of anyone who wrote rules by hand: they now need
-   enough power in the control room for the `guardian.*` event types (the
-   `m.room.power_levels` example below grants the bot 50). Server admins are
-   still honoured regardless, and a room-version-12 creator always is.
-3. `notify_user` no longer confers trust. It is still the account
-   `guardian.effective_rules` is sent as -- and, with `notify_via: room`, the
-   account notices are posted as -- and still needs power to send that state
-   event. With `notify_via: bot` the bot posts the notices itself, but
-   `notify_user` is still required for publishing the rule set.
-
-## Upgrading from family_guard 0.3.x
-
-Everything was renamed in 0.4.0: the pip package, the Python module, the state
-event types, the maubot plugin and the bot's command prefix. Nothing migrates
-itself, so do all of the following in one sitting.
-
-1. **Remove the old package first**, or both will sit in the virtualenv:
-
-   ```sh
-   /opt/venvs/matrix-synapse/bin/pip uninstall -y family-guard
-   /opt/venvs/matrix-synapse/bin/pip install --force-reinstall --no-deps \
-     "git+https://github.com/<you>/synapse-guardian.git"
-   ```
-
-2. **Point `homeserver.yaml` at the new class** — `family_guard.FamilyGuard`
-   becomes `synapse_guardian.Guardian`. Every config key is unchanged.
-
-3. **Rename the entries in the control room's `m.room.power_levels`**, under
-   `events`: `family_guard.protected_user` → `guardian.protected_user`, and the
-   same for `allowed_server`, `allowed_user`, `blocked_user`, `blocked_server`
-   and `effective_rules`. Miss this and the bot refuses to write rules and the
-   module logs one warning about `guardian.effective_rules`.
-
-4. **Replace the maubot plugin.** The id changed from `no.vibb.family_guard` to
-   `no.vibb.guardian`, so maubot treats it as a new plugin: delete the old
-   instance and plugin, `make bot-build`, upload the new `.mbp` and re-create
-   the instance with the same config.
-
-5. **Re-create any rules that live in the control room.** The new version only
-   reads `guardian.*` state events, so old `family_guard.*` ones are ignored —
-   run `!guard list` (note the new prefix), and add each rule again with
-   `!guard protect` / `!guard allow` / `!guard block`. Rules that live in
-   `homeserver.yaml` need no action. The stale `family_guard.*` state events are
-   inert and can be left alone, or blanked out by sending `{}` as their content
-   if you want the room tidy.
-
-6. **Restart Synapse** and check the log says `guardian: loaded (...)`.
-
-Prometheus series change too: the `block_name` label is now
-`synapse_guardian.module.Guardian.*`.
-
 ## Installation
 
-Into the Python environment Synapse runs in:
+Into the Python environment Synapse runs in. For the Debian packages from
+packages.matrix.org that is `/opt/venvs/matrix-synapse/bin/pip`:
 
 ```sh
-pip install git+https://github.com/<you>/synapse-guardian.git   # or: pip install .
+pip install "git+https://github.com/palchrb/synapse-guardian.git"
 ```
 
-Debian packages from packages.matrix.org: use `/opt/venvs/matrix-synapse/bin/pip`. Docker: build an overlay
-image:
+Docker: build an overlay image:
 
 ```Dockerfile
-FROM matrixdotorg/synapse
-RUN pip install git+https://github.com/<you>/synapse-guardian.git
+FROM ghcr.io/element-hq/synapse
+RUN pip install "git+https://github.com/palchrb/synapse-guardian.git"
+```
+
+The package has no runtime dependencies, so installing it cannot move anything
+Synapse depends on. To pick up a newer commit later, pip must be told to — it
+otherwise sees the same version and does nothing:
+
+```sh
+pip install --force-reinstall --no-deps "git+https://github.com/palchrb/synapse-guardian.git"
 ```
 
 ## Configuration (`homeserver.yaml`)
@@ -155,7 +104,7 @@ modules:
   though Matrix forbids listing them in `users`. Anyone you grant that level to
   can manage the rules — that is the point of granting it. If the power levels
   cannot be read, only server admins are honoured, and the module says so in
-  the log. (`trusted_senders` was removed in 0.5.0; see Upgrading.)
+  the log.
 - `dry_run` still logs and notifies (prefixed `[dry-run]`) so you can calibrate
   before enforcing. Remember to run `scripts/reject_pending_invites.py`
   afterwards (see gaps).
@@ -221,7 +170,6 @@ the module in a worker deployment.**
 - Everything else the module calls (`get_room_state`, `is_user_admin`,
   `is_mine`, `run_as_background_process`) is a worker-store read or local
   helper, available everywhere.
-
 - **Only the main process publishes `guardian.effective_rules`.** Every worker
   loads the module and enforces -- that is required, since an invite is checked
   wherever its request lands -- but two workers with briefly different views of
@@ -275,10 +223,10 @@ beyond Synapse itself, which is why it stays the default.
 
 ## Control room setup
 
-1. As an admin, create a **private, unencrypted** room. Do not set an alias,
-   do not publish it, and never invite the protected users.
-   (Encryption is unnecessary — state events are never encrypted — and would
-   make the module's server-side notices show as "unencrypted".)
+1. As an admin, create a **private** room. Do not set an alias, do not
+   publish it, and never invite the protected users. Unencrypted is the simplest
+   choice; if you want it encrypted, see *Encrypted control room* above — the
+   rules themselves are state events and stay plaintext either way.
 2. Set power levels so only you (and the bot) can write rules. Keep
    `state_default: 100` and grant the six types the bot needs at 50, in the
    `events` map of `m.room.power_levels`:
@@ -297,8 +245,8 @@ beyond Synapse itself, which is why it stays the default.
    `guardian.effective_rules` is written by the **module** as `notify_user`
    (see below), not by you; without it the bot cannot show static rules.
 
-   These levels are also what the module trusts: from 0.5.0 a local user's
-   rules are honoured exactly when they could send that state event themselves.
+   These levels are also what the module trusts: a local user's rules are
+   honoured exactly when they could send that state event themselves.
    Granting someone 50 here makes them a rule administrator — deliberately, and
    visibly, in the room's own state. Server admins are honoured regardless, and
    so is the room's creator under room version 12, where Matrix forbids listing
@@ -345,8 +293,8 @@ The entity is read from `content.entity` (falling back to the state key,
 which only works for server entries since user IDs need the `@`). State keys
 cannot start with `@` unless the sender *is* that user, hence the stripped
 form. `!guard remove`/`unblock`/`unprotect` clear every entry whose entity
-matches, whatever its state key. Changes take effect immediately on a monolith (the module
-listens for new events) and within `refresh_interval_s` on other workers.
+matches, whatever its state key. Changes take effect within `refresh_interval_s` (or immediately with
+`watch_control_room: true`).
 If the room becomes unreadable, the module keeps the last known rules.
 
 ## The bot
@@ -369,8 +317,9 @@ Hardening, so the bot can never be abused to grant rights:
 - Before any change the bot reads `m.room.power_levels` and refuses unless
   the sender could send that state event type themselves.
 - Optional `admins: [...]` in the plugin config restricts further.
-- Only local users can be protected; the bot refuses to protect the sender
-  themselves and reminds you that Synapse admins bypass the checks.
+- Only local users can be protected, and the bot refuses to protect the sender
+  themselves (a server admin cannot be protected — Synapse skips the checks for
+  admins).
 - Every entry records `added_by` and `ts`; `!guard list` shows them.
 - Catch-all globs in allow lists are refused (same validation as the module).
 
@@ -390,12 +339,15 @@ Until the user acts on it the invite is still *visible*, and nothing sweeps the
 whole invite list proactively. To tidy up:
 
 ```sh
+export GUARDIAN_ADMIN_TOKEN=<admin token>   # keeps it out of `ps` and shell history
 scripts/reject_pending_invites.py --homeserver https://matrix.example.org \
-    --admin-token <admin token> --users @kid:example.org [--dry-run]
+    --users @kid:example.org [--dry-run]
 ```
 
 It uses the admin "login as user" API, reads pending invites via `/sync` and
-leaves them, then logs the temporary token out.
+leaves them, then logs the temporary token out. A `/leave` that fails at the
+federation step usually still succeeds locally; the script re-checks the invite
+list rather than trusting the status code, and continues with the next user.
 
 ## Known gaps
 
@@ -431,9 +383,6 @@ leaves them, then logs the temporary token out.
 - Auto-leave: when a non-allowed user joins a room a protected user is in,
   make the protected user leave (`on_new_event`).
 - Set `m.room.server_acl` on rooms protected users create.
-- `notify_via: bot` — deliver notices through a webhook to the maubot plugin so
-  they can be encrypted/richer. The module already routes notices through a
-  small `Notifier` interface (`synapse_guardian/notify.py`) for this.
 - Per-child rule overrides.
 
 ## Development
