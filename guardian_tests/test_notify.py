@@ -168,3 +168,38 @@ def test_webhook_recovers_after_the_bot_comes_back(caplog) -> None:
         webhook_block(n, "@c:h.org")
     # the warning state reset on success, so the new outage is reported
     assert any("could not deliver notice" in r.message for r in caplog.records)
+
+
+def test_webhook_gives_up_on_a_hanging_bot() -> None:
+    """A bot that accepts and never answers must not pin a background process.
+
+    `post_json_get_json` takes no timeout, so WebhookNotifier bounds it itself.
+    """
+    from twisted.internet import defer, task
+
+    from synapse_guardian.notify import WebhookNotifier
+
+    clock = task.Clock()
+    never = defer.Deferred()  # accepted, never answered
+
+    class HangingApi:
+        class http_client:  # noqa: N801
+            @staticmethod
+            async def post_json_get_json(*a: object, **k: object) -> object:
+                return await never
+
+    n = WebhookNotifier(HangingApi(), "http://bot/notify", "s", 300.0, timeout=5.0)
+    # Drive it with a fake reactor so the test does not actually wait.
+    import synapse_guardian.notify as notify_mod
+
+    real_reactor = notify_mod.reactor
+    notify_mod.reactor = clock  # type: ignore[assignment]
+    try:
+        d = defer.ensureDeferred(n.message("hei"))
+        assert not d.called, "should still be waiting"
+        clock.advance(6)
+        assert d.called, "should have given up after the timeout"
+        d.result  # must not raise: the failure is swallowed
+    finally:
+        notify_mod.reactor = real_reactor  # type: ignore[assignment]
+        never.cancel()

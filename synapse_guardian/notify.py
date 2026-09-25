@@ -19,6 +19,8 @@ import re
 import time
 from typing import Any, Callable
 
+from twisted.internet import defer, reactor
+
 logger = logging.getLogger(__name__)
 
 # Identifiers reaching us from federation are unvalidated at the point we log
@@ -29,6 +31,11 @@ _MAX_ID_LEN = 255
 # An invite flood from many distinct senders bypasses per-(kind, actor, target)
 # dedupe, so bound both the memory and the number of events we persist.
 MAX_RECENT = 512
+
+# A bot that refuses the connection fails at once; one that accepts and then
+# hangs would otherwise tie up a background process indefinitely. Notices are
+# not worth waiting for.
+WEBHOOK_TIMEOUT_S = 5.0
 MAX_NOTICES_PER_WINDOW = 20
 
 
@@ -172,10 +179,12 @@ class WebhookNotifier(_ThrottledNotifier):
         secret: str,
         dedupe_s: float,
         clock: Callable[[], float] = time.monotonic,
+        timeout: float = WEBHOOK_TIMEOUT_S,
     ) -> None:
         super().__init__(dedupe_s, clock)
         self._api = api
         self._url = url
+        self._timeout = timeout
         # Never logged, never put in an exception message.
         self._secret = secret
         self._warned: set[str] = set()
@@ -195,11 +204,16 @@ class WebhookNotifier(_ThrottledNotifier):
 
     async def message(self, text: str) -> None:
         try:
-            await self._api.http_client.post_json_get_json(
-                self._url,
-                {"text": text},
-                {"Authorization": [f"Bearer {self._secret}"]},
+            # post_json_get_json takes no timeout of its own, so bound it here.
+            sending = defer.ensureDeferred(
+                self._api.http_client.post_json_get_json(
+                    self._url,
+                    {"text": text},
+                    {"Authorization": [f"Bearer {self._secret}"]},
+                )
             )
+            sending.addTimeout(self._timeout, reactor)
+            await sending
         except Exception as e:  # noqa: BLE001 - fire-and-forget by design
             self._warn_once(e)
             return
